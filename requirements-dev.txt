@@ -1,0 +1,2 @@
+# Tests only: pytest runs tests/test_core.py (no network, no browser).
+pytest>=8
