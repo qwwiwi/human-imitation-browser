@@ -4,6 +4,7 @@ Credentials never leave these objects in logs: repr() hides them and
 redact() removes them from error texts.
 """
 
+import ipaddress
 import json
 import logging
 import urllib.error
@@ -22,38 +23,76 @@ MOBILEPROXY_API = "https://mobileproxy.space/api.html"
 API_TIMEOUT_S = 20
 REQUIRED_FIELDS = ("proxy_hostname", "proxy_http_port", "proxy_login", "proxy_pass")
 
+ACCEPTED_FORMS = "http://host:port, http://login:password@host:port, socks5://host:port"
+
+# Addresses where a proxy without a login is acceptable: this machine and private networks.
+# 100.64.0.0/10 is the shared range that mesh VPNs (Tailscale and similar) hand out.
+_PRIVATE_NETWORKS = tuple(
+    ipaddress.ip_network(net)
+    for net in (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "::1/128",
+        "fc00::/7",  # IPv6 private range; mesh VPNs use it too
+        "fe80::/10",  # IPv6 link-local
+    )
+)
+_PRIVATE_NAME_SUFFIXES = (".ts.net", ".local", ".localhost")
+
 
 @dataclass(frozen=True)
 class ProxyConfig:
-    """HTTP proxy with login and password.
+    """A proxy: HTTP with or without login and password, or SOCKS5 without a login.
 
     Attributes:
         host: Proxy host name.
         port: Proxy port.
-        username: Login (hidden in repr).
-        password: Password (hidden in repr).
+        username: Login (hidden in repr), or None for a proxy without a login.
+        password: Password (hidden in repr), or None for a proxy without a login.
         extra_secrets: Other values to hide, for example the login before a session id was put in.
+        scheme: `http` or `socks5`. The login is only used with `http`.
     """
 
     host: str
     port: int
-    username: str = field(repr=False)
-    password: str = field(repr=False)
+    username: str | None = field(default=None, repr=False)
+    password: str | None = field(default=None, repr=False)
     extra_secrets: tuple[str, ...] = field(default=(), repr=False)
+    scheme: str = "http"
+
+    @property
+    def has_credentials(self) -> bool:
+        """True when the proxy asks for a login and password."""
+        return bool(self.username and self.password)
 
     def as_playwright(self) -> dict[str, str]:
-        """Return the dict Camoufox / Playwright expect in `proxy=`."""
-        return {"server": f"http://{self.host}:{self.port}", "username": self.username, "password": self.password}
+        """Return the dict Camoufox / Playwright expect in `proxy=`.
+
+        The `username` and `password` keys are present only when the proxy has them.
+        """
+        result = {"server": f"{self.scheme}://{self.host}:{self.port}"}
+        if self.username and self.password:
+            result["username"] = self.username
+            result["password"] = self.password
+        return result
 
     def as_url(self) -> str:
-        """Return `http://user:pass@host:port` with percent-encoded credentials."""
+        """Return `scheme://[user:pass@]host:port`; credentials, when present, are percent-encoded."""
+        if not (self.username and self.password):
+            return f"{self.scheme}://{self.host}:{self.port}"
         user = quote(self.username, safe="")
         pwd = quote(self.password, safe="")
-        return f"http://{user}:{pwd}@{self.host}:{self.port}"
+        return f"{self.scheme}://{user}:{pwd}@{self.host}:{self.port}"
 
     def secrets(self) -> list[str]:
-        """Return the values that must never be printed."""
-        found = [self.password, self.username, quote(self.password, safe=""), quote(self.username, safe="")]
+        """Return the values that must never be printed (an empty list for a proxy without a login)."""
+        found: list[str] = []
+        for value in (self.password, self.username):
+            if value:
+                found += [value, quote(value, safe="")]
         for extra in self.extra_secrets:
             found += [extra, quote(extra, safe="")]
         return found
@@ -137,18 +176,24 @@ def traffic_left_mb(data: object) -> float | None:
 
 
 def proxy_from_url(url: str) -> ProxyConfig:
-    """Parse `http://user:pass@host:port` (HIB_PROXY_URL) into a ProxyConfig.
+    """Parse HIB_PROXY_URL into a ProxyConfig.
+
+    Accepted: `http://host:port`, `http://login:password@host:port` and `socks5://host:port`.
+    A proxy without a login must be reachable only over localhost or a private network
+    (see `warn_if_open_proxy`).
 
     Args:
-        url: Proxy URL; user and password may be percent-encoded.
+        url: Proxy URL; login and password may be percent-encoded.
 
     Returns:
         The proxy settings.
 
     Raises:
-        ConfigError: The URL is not an http proxy URL with host, port, login and password.
-            An https:// proxy URL is refused: both adapters speak plain http to the
-            proxy, so accepting it would silently send the login unencrypted.
+        ConfigError: The URL has another scheme, no host or no port, only one of login and
+            password, or is a SOCKS URL with a login. An https:// proxy URL is refused: both
+            adapters speak plain http to the proxy, so accepting it would silently send the
+            login unencrypted. SOCKS with a login is refused because Playwright's Firefox
+            cannot be relied on to send it (not verified here). The message never contains the URL.
     """
     try:
         parts = urlsplit(url.strip())
@@ -157,12 +202,56 @@ def proxy_from_url(url: str) -> ProxyConfig:
         # Raised for an unclosed bracket or a bad port; the message may echo the URL, so it is dropped.
         raise ConfigError("HIB_PROXY_URL is malformed: check the brackets and the port") from None
     if parts.scheme == "https":
-        raise ConfigError("HIB_PROXY_URL must start with http://: https:// proxies are not supported")
-    if parts.scheme != "http":
-        raise ConfigError("HIB_PROXY_URL must look like http://login:password@host:port")
-    if not parts.hostname or not port or parts.username is None or parts.password is None:
-        raise ConfigError("HIB_PROXY_URL must look like http://login:password@host:port")
+        raise ConfigError(f"HIB_PROXY_URL must not start with https://: https:// proxies are not supported. Use: {ACCEPTED_FORMS}")
+    if parts.scheme == "socks5h":
+        raise ConfigError(f"socks5h:// is not supported in HIB_PROXY_URL: use socks5://host:port. Accepted: {ACCEPTED_FORMS}")
+    if parts.scheme not in ("http", "socks5"):
+        raise ConfigError(f"HIB_PROXY_URL must look like one of: {ACCEPTED_FORMS}")
+    if not parts.hostname or not port:
+        raise ConfigError(f"HIB_PROXY_URL needs a host and a port. Accepted: {ACCEPTED_FORMS}")
+    if parts.username is None and parts.password is None:
+        return ProxyConfig(host=parts.hostname, port=port, scheme=parts.scheme)
+    if not parts.username or not parts.password:
+        raise ConfigError(f"HIB_PROXY_URL has only one of login and password: give both or neither. Accepted: {ACCEPTED_FORMS}")
+    if parts.scheme == "socks5":
+        raise ConfigError(
+            "a SOCKS proxy with a login and password is not supported in HIB_PROXY_URL "
+            f"(the browser layer cannot be relied on to send it). Accepted: {ACCEPTED_FORMS}"
+        )
     return ProxyConfig(host=parts.hostname, port=port, username=unquote(parts.username), password=unquote(parts.password))
+
+
+def _is_private_host(host: str) -> bool:
+    """True when the host is loopback, a private or shared (mesh VPN) address, or a local-only name."""
+    name = host.lower().rstrip(".")
+    if name == "localhost" or name.endswith(_PRIVATE_NAME_SUFFIXES):
+        return True
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return any(address in net for net in _PRIVATE_NETWORKS if net.version == address.version)
+
+
+def warn_if_open_proxy(proxy: ProxyConfig) -> bool:
+    """Log one WARNING when a proxy without a login sits on a public address.
+
+    A proxy without a login must be reachable only over localhost or a private network:
+    on a public address anyone can use it, and the abuse goes to the owner's name.
+
+    Args:
+        proxy: The proxy from HIB_PROXY_URL.
+
+    Returns:
+        True when the warning was logged.
+    """
+    if proxy.has_credentials or _is_private_host(proxy.host):
+        return False
+    logger.warning(
+        "the proxy in HIB_PROXY_URL has no login and its address looks public: an open proxy on a public "
+        "address can be used by anyone. Keep it reachable only over localhost or a private network"
+    )
+    return True
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -266,6 +355,11 @@ def resolve_proxy(token: str | None, proxy_url: str | None) -> ProxyConfig:
     return proxy_from_api_response(call_mobileproxy("get_my_proxy", token))
 
 
+def can_check_exit_ip(proxy: ProxyConfig) -> bool:
+    """True when `check_exit_ip` can use this proxy (the standard library speaks only HTTP proxies)."""
+    return proxy.scheme == "http"
+
+
 def check_exit_ip(proxy: ProxyConfig, url: str = "https://ipinfo.io/json") -> dict[str, str]:
     """Open a neutral IP-info page through the proxy and return country, city, org.
 
@@ -280,7 +374,10 @@ def check_exit_ip(proxy: ProxyConfig, url: str = "https://ipinfo.io/json") -> di
         ProxyUnreachableError: The proxy refused, failed the login or timed out, or
             the NO_PROXY setting would make the request skip the proxy (the check
             would then report this server's own address).
+        ConfigError: The proxy is SOCKS: urllib cannot speak SOCKS (see `can_check_exit_ip`).
     """
+    if not can_check_exit_ip(proxy):
+        raise ConfigError("the exit address cannot be checked through a SOCKS proxy here: urllib has no SOCKS support")
     host = urlsplit(url).hostname or ""
     if urllib.request.proxy_bypass(host):
         raise ProxyUnreachableError(
@@ -301,3 +398,4 @@ def check_exit_ip(proxy: ProxyConfig, url: str = "https://ipinfo.io/json") -> di
     if not isinstance(info, dict):
         raise ProxyUnreachableError("the check page returned unexpected data")
     return {key: str(info.get(key, "")) for key in ("country", "city", "org")}
+

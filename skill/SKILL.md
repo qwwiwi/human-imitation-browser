@@ -87,7 +87,7 @@ stdout carries one JSON line per page:
 
 On an error, one line `{"error": "...", "exit_code": N}`. Diagnostics go to stderr. `screenshot` is empty if the screenshot could not be taken. `visits` is how many runs this profile has made.
 
-`check_proxy.py` prints `{"source", "country", "city", "org", "ru", "traffic_left_mb"}`; if `ru` is false, tell the person the exit address is not in Russia.
+For a `socks5://` proxy `check_proxy.py` cannot check the exit address: it prints `{"source", "checked": false, "note"}`; use `open_page.py https://ipinfo.io/json --profile <name>` instead. Otherwise `check_proxy.py` prints `{"source", "country", "city", "org", "ru", "traffic_left_mb"}`; if `ru` is false, tell the person the exit address is not in Russia.
 
 Judge the result by the screenshot and `challenge`, not by `status` alone: some sites answer 403 and still render the full page.
 

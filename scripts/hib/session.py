@@ -112,6 +112,8 @@ def _build(http_url: str, session_id: str, country: str, city: str) -> SessionPr
         base = proxy_from_url(http_url)
     except ConfigError:
         raise ProxyApiError("the proxy API returned an address that is not a usable http proxy") from None
+    if base.scheme != "http" or not base.username or not base.password:
+        raise ProxyApiError("the proxy API returned an address without a login: a sticky session needs one")
     proxy = ProxyConfig(
         host=base.host,
         port=base.port,

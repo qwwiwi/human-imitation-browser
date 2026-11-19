@@ -25,7 +25,7 @@ from hib.env import DEFAULT_ENV_FILE, REPO_ROOT, Settings, load_settings
 from hib.errors import EXIT_CHALLENGE, EXIT_OK, EXIT_UNEXPECTED, ConfigError, HibError, ProfileError
 from hib.pace import Pacer
 from hib.profiles import DEFAULT_PROFILE, ProfileStore, profiles_root, validate_profile_name
-from hib.proxy import ProxyConfig, proxy_from_url, redact, resolve_proxy
+from hib.proxy import ProxyConfig, proxy_from_url, redact, resolve_proxy, warn_if_open_proxy
 from hib.session import resolve_session_proxy
 
 logger = logging.getLogger("open_page")
@@ -141,6 +141,7 @@ def main(argv: list[str]) -> int:
         fixed_proxy = _check_proxy_settings(settings, args.no_proxy)
         if fixed_proxy:
             secrets.extend(fixed_proxy.secrets())
+            warn_if_open_proxy(fixed_proxy)
         if args.ephemeral:
             logger.warning(
                 "EPHEMERAL run: a brand-new browser, so every site sees a new visitor. "
