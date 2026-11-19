@@ -4,9 +4,12 @@
 Opens a neutral address-check page in the SAME profile and through the SAME proxy that the real
 visit would use (nothing is opened on a real site), and prints one JSON line:
     {"ok", "profile", "proxy_works", "country", "city", "network_owner", "hosting", "proxy_flag",
-     "address_changed", ["address_change": {"old", "new"}], "profile_memory", "cookies_stored",
+     "mobile", "address_changed", ["address_change": {"old", "new"}], "profile_memory", "cookies_stored",
      "screenshot", "problems", "problems_soft"}
-"hosting" and "proxy_flag" are a third-party opinion (true, false or null when unknown).
+"hosting", "proxy_flag" and "mobile" are a third-party opinion (true, false or null when unknown); they are
+read from an https page (default https://api.ipapi.is/, set HIB_REPUTATION_URL to use another one).
+An address page that times out is tried once more after a short pause.
+"mobile" true means the address of a mobile operator; it never fails the check.
 "profile_memory" is "new", "ok" or "empty". The line never carries an IP address, a cookie name or
 value, or a proxy detail. Diagnostics go to stderr.
 
@@ -100,6 +103,7 @@ def main(argv: list[str]) -> int:
         settings = load_settings(args.env_file)
         secrets.extend(s for s in (settings.mobileproxy_token,) if s)
         check_url = core.check_url_or_default(settings.check_url)
+        reputation_url = core.reputation_url_or_default(settings.reputation_url)
         # Imported here so that a broken browser install still gives a clean JSON error.
         from hib import browser
 
@@ -126,7 +130,8 @@ def main(argv: list[str]) -> int:
                 secrets.extend(proxy.secrets())
             before = core.before_from_profile(profile)
             logger.info("pre-flight for profile %s: opening the address-check page through its proxy", profile.name)
-            seen = core.sanitized(core.observe_in_browser(proxy, profile, options, check_url), secrets)
+            observed = core.observe_in_browser(proxy, profile, options, check_url, reputation_url=reputation_url)
+            seen = core.sanitized(observed, secrets)
             verdict = core.assess(before, seen, strict=args.strict, accept_address_change=args.accept_address_change)
             if verdict.ok:
                 # A failed check records nothing: running it again must not turn a changed address into the normal one.

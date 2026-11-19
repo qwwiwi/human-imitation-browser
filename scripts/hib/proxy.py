@@ -21,8 +21,11 @@ logger = logging.getLogger(__name__)
 
 MOBILEPROXY_API = "https://mobileproxy.space/api.html"
 API_TIMEOUT_S = 20
-# One public reputation service; its free tier is plain http only. The request carries no login or token.
-REPUTATION_URL = "http://ip-api.com/json/?fields=status,hosting,proxy"
+# Two public reputation services; neither request carries a login or token.
+# check_proxy.py goes through the proxy with plain urllib: ip-api.com (free tier is plain http only) works there,
+# but a real browser may refuse or redirect plain http, so the browser pre-flight reads an https page instead.
+PROXY_REPUTATION_URL = "http://ip-api.com/json/?fields=status,hosting,proxy,mobile"
+BROWSER_REPUTATION_URL = "https://api.ipapi.is/"
 REQUIRED_FIELDS = ("proxy_hostname", "proxy_http_port", "proxy_login", "proxy_pass")
 
 ACCEPTED_FORMS = "http://host:port, http://login:password@host:port, socks5://host:port"
@@ -422,26 +425,81 @@ def check_exit_ip(proxy: ProxyConfig, url: str = "https://ipinfo.io/json") -> di
     return {key: str(info.get(key, "")) for key in ("country", "city", "org")}
 
 
+def _bool_or_none(value: object) -> bool | None:
+    """Return the value when it is a real boolean, otherwise None (unknown)."""
+    return value if isinstance(value, bool) else None
+
+
 def parse_reputation(data: object) -> dict[str, bool | None]:
-    """Read the `hosting` and `proxy` flags from a reputation answer.
+    """Read the `hosting`, `proxy` and `mobile` flags from an ip-api.com answer.
 
     Args:
         data: Decoded JSON of the reputation service, or None when there was no answer.
 
     Returns:
-        Mapping with the keys `hosting` and `proxy`: True or False when the service said so
-        (status `success`, both values real booleans), otherwise None (unknown) for both.
+        Mapping with the keys `hosting`, `proxy` and `mobile`: True or False when the service said so
+        (status `success`, real booleans), otherwise None (unknown). `hosting` and `proxy` are unknown
+        together; `mobile` stands on its own.
     """
+    unknown: dict[str, bool | None] = {"hosting": None, "proxy": None, "mobile": None}
     if not isinstance(data, dict) or data.get("status") != "success":
-        return {"hosting": None, "proxy": None}
-    hosting, flagged = data.get("hosting"), data.get("proxy")
-    if not isinstance(hosting, bool) or not isinstance(flagged, bool):
-        return {"hosting": None, "proxy": None}
-    return {"hosting": hosting, "proxy": flagged}
+        return unknown
+    hosting, flagged = _bool_or_none(data.get("hosting")), _bool_or_none(data.get("proxy"))
+    if hosting is None or flagged is None:
+        return {**unknown, "mobile": _bool_or_none(data.get("mobile"))}
+    return {"hosting": hosting, "proxy": flagged, "mobile": _bool_or_none(data.get("mobile"))}
 
 
-def check_reputation(proxy: ProxyConfig, url: str = REPUTATION_URL) -> dict[str, bool | None]:
-    """Ask one public reputation service whether the exit address is flagged as hosting or proxy.
+def parse_ipapi_is(data: object) -> dict[str, bool | None]:
+    """Read the flags from an api.ipapi.is answer (the page the browser pre-flight opens).
+
+    Mapping: `hosting` = `is_datacenter`; `proxy` = `is_proxy` or `is_vpn` or `is_tor`; `mobile` = `is_mobile`.
+    Each flag stands on its own. `proxy` is True when any of its three fields is true, False when all three
+    are false, and unknown when a field is missing or not a boolean and none of the others is true.
+
+    Args:
+        data: Decoded JSON of the page, or None when there was no usable answer.
+
+    Returns:
+        Mapping with the keys `hosting`, `proxy` and `mobile`: True, False or None (unknown).
+    """
+    if not isinstance(data, dict):
+        return {"hosting": None, "proxy": None, "mobile": None}
+    parts = [_bool_or_none(data.get(key)) for key in ("is_proxy", "is_vpn", "is_tor")]
+    if any(part is True for part in parts):
+        flagged: bool | None = True
+    elif all(part is False for part in parts):
+        flagged = False
+    else:
+        flagged = None
+    return {"hosting": _bool_or_none(data.get("is_datacenter")), "proxy": flagged, "mobile": _bool_or_none(data.get("is_mobile"))}
+
+
+def extract_json(text: str) -> dict[str, object] | None:
+    """Read a JSON object out of a page body, also when the browser wrapped it in HTML.
+
+    Args:
+        text: The response body (a viewer or a proxy may have put HTML around the JSON).
+
+    Returns:
+        The JSON object, or None when the text holds none (empty, a plain page, broken JSON, a list).
+    """
+    candidates = [text]
+    start, end = text.find("{"), text.rfind("}")
+    if 0 <= start < end:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def check_reputation(proxy: ProxyConfig, url: str = PROXY_REPUTATION_URL) -> dict[str, bool | None]:
+    """Ask one public reputation service whether the exit address is flagged as hosting or proxy (and mobile).
 
     This is one extra read-only request through the proxy. The answer is a third party's opinion
     and can be wrong. Any failure (service down, rate limit, odd answer, SOCKS proxy) is not an
@@ -449,10 +507,10 @@ def check_reputation(proxy: ProxyConfig, url: str = REPUTATION_URL) -> dict[str,
 
     Args:
         proxy: Proxy to test.
-        url: JSON endpoint that describes the caller's IP with `hosting` and `proxy` fields.
+        url: JSON endpoint that describes the caller's IP with `hosting`, `proxy` and `mobile` fields (ip-api.com format).
 
     Returns:
-        Mapping with the keys `hosting` and `proxy`: True, False or None (unknown).
+        Mapping with the keys `hosting`, `proxy` and `mobile`: True, False or None (unknown).
     """
     try:
         data = _get_json_via_proxy(proxy, url)

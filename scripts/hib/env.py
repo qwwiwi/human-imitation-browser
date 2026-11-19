@@ -55,6 +55,7 @@ class Settings:
         min_gap_s: Minimal seconds between navigations to one host (HIB_MIN_GAP_S).
         check_url: Address-check page for the pre-flight (HIB_CHECK_URL), or None for the default.
         preflight_max_age_h: Hours a successful pre-flight stays valid (HIB_PREFLIGHT_MAX_AGE_H).
+        reputation_url: Page with the hosting/proxy/mobile flags for the pre-flight (HIB_REPUTATION_URL), or None for the default.
     """
 
     mobileproxy_token: str | None
@@ -66,6 +67,7 @@ class Settings:
     min_gap_s: float = DEFAULT_MIN_GAP_S
     check_url: str | None = None
     preflight_max_age_h: float = DEFAULT_PREFLIGHT_MAX_AGE_H
+    reputation_url: str | None = None
 
     def __repr__(self) -> str:
         """Never show secret values."""
@@ -137,4 +139,5 @@ def load_settings(env_file: Path = DEFAULT_ENV_FILE, environ: Mapping[str, str] 
         min_gap_s=parse_min_gap(pick("HIB_MIN_GAP_S")),
         check_url=pick("HIB_CHECK_URL"),
         preflight_max_age_h=parse_preflight_max_age(pick("HIB_PREFLIGHT_MAX_AGE_H")),
+        reputation_url=pick("HIB_REPUTATION_URL"),
     )

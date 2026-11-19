@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import check_proxy
-from hib.proxy import ProxyConfig, check_reputation
+from hib.proxy import PROXY_REPUTATION_URL, ProxyConfig, check_reputation, parse_reputation
 
 SYNTHETIC_URL = "http://demo_user:s3cret-pass@127.0.0.1:18932"
 FLAGGED = {"status": "success", "hosting": True, "proxy": True}
@@ -65,14 +65,28 @@ def test_reputation_reads_the_hosting_and_proxy_flags_through_the_proxy() -> Non
     handler = _handler(FLAGGED)
     with _fake_proxy(handler) as port:
         flags = check_reputation(ProxyConfig("127.0.0.1", port), url="http://rep.example.test/json")
-    assert flags == {"hosting": True, "proxy": True}
+    assert flags == {"hosting": True, "proxy": True, "mobile": None}  # this answer has no `mobile` field
     assert handler.seen[0].startswith("http://rep.example.test/")  # the request went through the proxy
 
 
 def test_reputation_keeps_false_apart_from_unknown() -> None:
     with _fake_proxy(_handler({"status": "success", "hosting": False, "proxy": False})) as port:
         flags = check_reputation(ProxyConfig("127.0.0.1", port), url="http://rep.example.test/json")
-    assert flags == {"hosting": False, "proxy": False}
+    assert flags == {"hosting": False, "proxy": False, "mobile": None}
+
+
+def test_reputation_reads_the_mobile_flag_when_the_service_gives_it() -> None:
+    answer = {"status": "success", "hosting": False, "proxy": False}
+    assert parse_reputation({**answer, "mobile": True})["mobile"] is True
+    assert parse_reputation({**answer, "mobile": False})["mobile"] is False
+    assert parse_reputation({**answer, "mobile": "yes"})["mobile"] is None
+    assert parse_reputation({"status": "fail"}) == {"hosting": None, "proxy": None, "mobile": None}
+
+
+def test_the_plain_http_lookup_of_check_proxy_asks_for_the_mobile_field_too() -> None:
+    assert PROXY_REPUTATION_URL.startswith("http://ip-api.com/json/")
+    fields = PROXY_REPUTATION_URL.split("fields=")[1].split(",")
+    assert {"status", "hosting", "proxy", "mobile"} <= set(fields)
 
 
 @pytest.mark.parametrize(
@@ -89,12 +103,12 @@ def test_reputation_keeps_false_apart_from_unknown() -> None:
 def test_reputation_that_cannot_be_read_is_unknown_not_an_error(answer: object, code: int) -> None:
     with _fake_proxy(_handler(answer, code)) as port:
         flags = check_reputation(ProxyConfig("127.0.0.1", port), url="http://rep.example.test/json")
-    assert flags == {"hosting": None, "proxy": None}
+    assert flags == {"hosting": None, "proxy": None, "mobile": None}
 
 
 def test_reputation_with_a_dead_proxy_is_unknown_not_an_error() -> None:
     flags = check_reputation(ProxyConfig("127.0.0.1", 1), url="http://rep.example.test/json")
-    assert flags == {"hosting": None, "proxy": None}
+    assert flags == {"hosting": None, "proxy": None, "mobile": None}
 
 
 # ------------------------------------------------------------ check_proxy.py output
@@ -119,7 +133,8 @@ def _run(
 def test_script_prints_owner_and_reputation_in_json_and_in_a_line(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
 ) -> None:
-    out, log = _run(monkeypatch, tmp_path, capsys, caplog, {"hosting": True, "proxy": False})
+    out, log = _run(monkeypatch, tmp_path, capsys, caplog, {"hosting": True, "proxy": False, "mobile": True})
+    assert out["mobile"] is True
     assert out["network_owner"] == "AS1 Demo Net"
     assert out["hosting"] is True and out["proxy_flag"] is False
     assert out["country"] == "RU" and out["ru"] is True  # the old fields stay
@@ -129,8 +144,8 @@ def test_script_prints_owner_and_reputation_in_json_and_in_a_line(
 def test_script_says_unknown_when_the_reputation_cannot_be_read(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
 ) -> None:
-    out, log = _run(monkeypatch, tmp_path, capsys, caplog, {"hosting": None, "proxy": None})
-    assert out["hosting"] is None and out["proxy_flag"] is None
+    out, log = _run(monkeypatch, tmp_path, capsys, caplog, {"hosting": None, "proxy": None, "mobile": None})
+    assert out["hosting"] is None and out["proxy_flag"] is None and out["mobile"] is None
     assert "reputation: unknown" in log
 
 

@@ -141,7 +141,7 @@
 Она открывает в этом профиле и через этот же прокси не настоящий сайт, а нейтральную страницу проверки адреса, и печатает одну строку JSON. Значения здесь придуманы, это пример формата, а не результат реального запуска:
 
 ```json
-{"ok": true, "profile": "my-shop", "proxy_works": true, "country": "RU", "city": "Example City", "network_owner": "AS64500 Example Home Net", "hosting": false, "proxy_flag": false, "address_changed": false, "profile_memory": "ok", "cookies_stored": 12, "screenshot": "out/20261119-120000-000000-ipinfo.io.png", "problems": [], "problems_soft": []}
+{"ok": true, "profile": "my-shop", "proxy_works": true, "country": "RU", "city": "Example City", "network_owner": "AS64500 Example Home Net", "hosting": false, "proxy_flag": false, "mobile": false, "address_changed": false, "profile_memory": "ok", "cookies_stored": 12, "screenshot": "out/20261119-120000-000000-ipinfo.io.png", "problems": [], "problems_soft": []}
 ```
 
 Что значат строки:
@@ -150,7 +150,8 @@
 - `profile` – имя профиля, который проверяли;
 - `proxy_works` – страница проверки загрузилась через прокси;
 - `country`, `city`, `network_owner` – как адрес выглядит снаружи: страна, город, кому принадлежит сеть;
-- `hosting`, `proxy_flag` – пометки сторонних служб репутации (`true` – помечен, `false` – нет, `null` – служба не ответила). Они могут ошибаться. Без ключа `--strict` пометка – предупреждение в `problems_soft`, с ключом – остановка;
+- `hosting`, `proxy_flag` – пометки сторонних служб репутации (`true` – помечен, `false` – нет, `null` – служба не ответила). Они могут ошибаться. Без ключа `--strict` пометка – предупреждение в `problems_soft`, с ключом – остановка. Если пометки получить не удалось, они `null`: это только предупреждение;
+- `mobile` – `true`, если служба считает адрес адресом мобильного оператора (`false` – нет, `null` – служба не ответила). Это справка: на результат проверки она не влияет;
 - `address_changed` – `true`, если страна, город или владелец сети другие, чем при прошлой проверке этого профиля: для сайта это уже другой посетитель. Сам номер адреса не печатается;
 - `profile_memory` – `new` (профиль ещё не использовался), `ok` (память на месте) или `empty` (профиль использовался, а его память пропала). Куки считаются только числом (`cookies_stored`), их названия и значения не читаются;
 - `screenshot` – снимок страницы проверки; на нём виден адрес, не публикуйте его;

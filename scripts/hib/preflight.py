@@ -14,13 +14,15 @@ needs a browser. Output never carries an IP address, a cookie name or value, or 
 
 import logging
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from hib.errors import ConfigError, HibError
+from hib.errors import ConfigError, HibError, PageTimeoutError
 from hib.profiles import Profile, clean_place
-from hib.proxy import REPUTATION_URL, ProxyConfig, parse_reputation, redact
+from hib.proxy import BROWSER_REPUTATION_URL, ProxyConfig, extract_json, parse_ipapi_is, redact
 
 if TYPE_CHECKING:
     from hib.browser import OpenOptions
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_CHECK_URL = "https://ipinfo.io/json"
+RETRY_PAUSE_S = 5.0  # pause before the one retry of an address page that timed out (a first load through a proxy can be slow)
 COOKIE_STORE_FILE = "cookies.sqlite"  # Firefox keeps the cookies of a profile folder here
 NETWORK_KEYS = ("country", "city", "owner")
 _OWNER_MAX_CHARS = 80
@@ -93,6 +96,7 @@ class Seen:
         cookie_store_present: The cookie store file exists in the profile folder after the run.
         data_dir_empty: The browser data folder was empty before the run.
         screenshot: Path of the screenshot of the check page, empty if it could not be taken.
+        mobile: True when the reputation service says the address belongs to a mobile operator, False when not, None if unknown.
     """
 
     country: str
@@ -105,6 +109,7 @@ class Seen:
     cookie_store_present: bool
     data_dir_empty: bool
     screenshot: str
+    mobile: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -247,6 +252,7 @@ def build_report(profile_name: str, seen: Seen, verdict: Verdict) -> dict[str, o
         "network_owner": seen.owner or None,
         "hosting": seen.hosting,
         "proxy_flag": seen.proxy_flag,
+        "mobile": seen.mobile,
         "address_changed": verdict.address_changed,
     }
     if verdict.change is not None:
@@ -273,6 +279,22 @@ def check_url_or_default(value: str | None) -> str:
         return DEFAULT_CHECK_URL
     if not re.fullmatch(r"https?://[^\s/]+\S*", value):
         raise ConfigError("HIB_CHECK_URL must be an http:// or https:// address of a page that answers with JSON")
+    return value
+
+
+def reputation_url_or_default(value: str | None) -> str:
+    """Return the page that gives the hosting, proxy and mobile flags: HIB_REPUTATION_URL if set, otherwise the default.
+
+    Raises:
+        ConfigError: The override is not an http:// or https:// address.
+    """
+    if value is None:
+        return BROWSER_REPUTATION_URL
+    if not re.fullmatch(r"https?://[^\s/]+\S*", value):
+        raise ConfigError(
+            "HIB_REPUTATION_URL must be an http:// or https:// address of a page that answers with JSON "
+            "having is_datacenter, is_proxy, is_vpn, is_tor and is_mobile (the api.ipapi.is format)"
+        )
     return value
 
 
@@ -307,26 +329,30 @@ def observe_in_browser(
     profile: Profile,
     options: "OpenOptions",
     check_url: str,
-    reputation_url: str = REPUTATION_URL,
+    reputation_url: str = BROWSER_REPUTATION_URL,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> Seen:
     """Open the address-check pages in the profile's browser through the proxy and describe what they show.
 
-    The check page gives country, city and owner; a second neutral page gives the hosting and proxy
-    flags (unknown if it fails). No human-like pauses, no pacing: neither page is a real site.
+    The check page gives country, city and owner (one retry after a load timeout); a second neutral https
+    page gives the hosting, proxy and mobile flags (unknown if it fails or answers something unusable).
+    No human-like pauses, no pacing: neither page is a real site.
 
     Args:
         proxy: The proxy the real visit would use.
         profile: The profile whose browser memory is used.
         options: Opening options (screenshot folder, timeout).
         check_url: Page that answers with JSON having `country`, `city` and `org`.
-        reputation_url: Page that answers with JSON having `status`, `hosting` and `proxy`.
+        reputation_url: Page that answers with JSON having `is_datacenter`, `is_proxy`, `is_vpn`, `is_tor`
+            and `is_mobile` (the api.ipapi.is format). The JSON may sit inside an HTML wrapper.
+        sleep: The pause function (tests pass a fake clock).
 
     Returns:
         The observation.
 
     Raises:
         ProxyUnreachableError: The proxy failed.
-        PageTimeoutError: The check page did not load in time.
+        PageTimeoutError: The check page did not load in time, twice.
         BrowserStartError: The browser did not start.
         HibError: The check page answered something unusable.
     """
@@ -337,7 +363,12 @@ def observe_in_browser(
     data_dir_empty = _is_empty_folder(profile.user_data_dir)
     with browser.launch(proxy, options, profile) as page:
         at_start = browser.stored_cookie_count(page)
-        info = browser.fetch_json_page(page, check_url, options.timeout_s, secrets)
+        try:
+            info = browser.fetch_json_page(page, check_url, options.timeout_s, secrets)
+        except PageTimeoutError:
+            logger.info("the address-check page timed out: trying once more in %g s", RETRY_PAUSE_S)
+            sleep(RETRY_PAUSE_S)
+            info = browser.fetch_json_page(page, check_url, options.timeout_s, secrets)
         if not isinstance(info, dict):
             raise HibError("the address-check page returned unexpected data")
         shot = browser.screenshot_path(options.out_dir, check_url)
@@ -348,10 +379,11 @@ def observe_in_browser(
             logger.warning("screenshot failed: %s", redact(str(exc).splitlines()[0] if str(exc) else "", secrets))
             screenshot = ""
         try:
-            flags = parse_reputation(browser.fetch_json_page(page, reputation_url, options.timeout_s, secrets))
+            # The body, not the rendered page: the browser's JSON viewer or a wrapper must not hide the JSON.
+            flags = parse_ipapi_is(extract_json(browser.fetch_page_body(page, reputation_url, options.timeout_s, secrets) or ""))
         except HibError as exc:
             logger.info("reputation lookup failed: %s", redact(str(exc), secrets))
-            flags = parse_reputation(None)
+            flags = parse_ipapi_is(None)
         at_end = browser.stored_cookie_count(page)
     return Seen(
         country=str(info.get("country") or ""),
@@ -359,6 +391,7 @@ def observe_in_browser(
         owner=str(info.get("org") or ""),
         hosting=flags["hosting"],
         proxy_flag=flags["proxy"],
+        mobile=flags["mobile"],
         cookies_at_start=at_start,
         cookies_at_end=at_end,
         cookie_store_present=(profile.user_data_dir / COOKIE_STORE_FILE).is_file(),

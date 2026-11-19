@@ -181,10 +181,43 @@ def test_the_address_page_has_two_parts_and_the_measured_facts_exactly() -> None
 def test_the_address_page_names_exactly_three_third_party_pages_to_open_by_hand() -> None:
     by_hand = _section(PAGE, "Посмотреть глазами")
     hosts = {match.split("/")[0] for match in re.findall(r"https?://([^\s)]+)", by_hand)}
-    assert hosts == {"ipinfo.io", "ip-api.com", "browserleaks.com"}
-    assert "https://browserleaks.com/ip" in by_hand
+    assert hosts == {"ipinfo.io", "api.ipapi.is", "browserleaks.com"}
+    assert "https://browserleaks.com/ip" in by_hand and "https://api.ipapi.is" in by_hand
     assert "могут ошибаться" in by_hand and "противоречить" in by_hand
     assert "не зависит" in by_hand  # the tool does not depend on the last one
+    flags_line = next(line for line in by_hand.splitlines() if "api.ipapi.is" in line and line.startswith("- "))
+    assert "читает `preflight.py`" in flags_line and "mobile" in flags_line  # the page the tool reads, with the three flags
+
+
+def test_the_address_page_names_ip_api_only_as_the_plain_http_lookup_of_check_proxy() -> None:
+    assert "ip-api.com" not in _section(PAGE, "Посмотреть глазами")
+    mentions = [line for line in PAGE.splitlines() if "ip-api.com" in line]
+    assert mentions and all("check_proxy.py" in line and "http" in line for line in mentions)
+    assert "браузер" in " ".join(mentions)  # a browser may refuse plain http
+
+
+def test_the_address_page_documents_the_flags_page_override_and_its_fields() -> None:
+    step = _section(PAGE, "Проверка одной командой")
+    assert "HIB_REPUTATION_URL" in step and "https://api.ipapi.is/" in step
+    for name in ("is_datacenter", "is_proxy", "is_vpn", "is_tor", "is_mobile"):
+        assert f"`{name}`" in step, name
+    assert "HIB_REPUTATION_URL" in GUIDE and "is_datacenter" in GUIDE
+    assert "один раз" in step and "повтор" in step  # a slow address page is tried once more
+
+
+def test_the_reading_table_has_a_mobile_network_row() -> None:
+    table = _section(PAGE, "Как читать результат")
+    rows = [line for line in table.splitlines() if line.startswith("|") and "mobile" in line.split("|")[1]]
+    assert len(rows) == 1  # the first cell (what is seen) names the flag
+    assert "мобильного оператора" in rows[0].split("|")[2]
+    assert "`mobile`" in _section(PAGE, "Проверка одной командой")
+
+
+def test_check_proxy_sample_and_skill_name_the_mobile_field() -> None:
+    sample = re.search(r'\{"source": "mobileproxy\.space".+\}', GUIDE)
+    assert sample and '"mobile"' in sample.group(0)
+    assert "`mobile`" in _section(GUIDE, "4.1. Проверьте прокси")
+    assert "`mobile`" in SKILL
 
 
 def test_the_address_page_keeps_the_stop_rule_and_makes_no_promise() -> None:

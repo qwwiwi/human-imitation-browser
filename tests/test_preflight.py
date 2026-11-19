@@ -32,6 +32,7 @@ def seen(**changes: object) -> Seen:
         "owner": "Test Home Net",
         "hosting": False,
         "proxy_flag": False,
+        "mobile": None,
         "cookies_at_start": 4,
         "cookies_at_end": 5,
         "cookie_store_present": True,
@@ -218,7 +219,7 @@ class FakeObserver:
         self.calls: list[dict[str, object]] = []
 
     def __call__(self, proxy, profile, options, check_url, **kwargs):  # type: ignore[no-untyped-def]
-        self.calls.append({"proxy": proxy, "profile": profile, "check_url": check_url})
+        self.calls.append({"proxy": proxy, "profile": profile, "check_url": check_url, **kwargs})
         if isinstance(self.observed, Exception):
             raise self.observed
         return self.observed
@@ -231,6 +232,7 @@ def observer(monkeypatch: pytest.MonkeyPatch) -> FakeObserver:
     monkeypatch.setattr(browser, "make_fingerprint", lambda: {"navigator": {"userAgent": "synthetic"}})
     monkeypatch.setenv("HIB_PROXY_URL", PROXY_URL)
     monkeypatch.delenv("HIB_CHECK_URL", raising=False)
+    monkeypatch.delenv("HIB_REPUTATION_URL", raising=False)
     monkeypatch.delenv("HIB_PREFLIGHT_MAX_AGE_H", raising=False)
     return fake
 
@@ -270,6 +272,58 @@ def test_the_default_profile_and_the_check_url_override(
     assert _run(tmp_path) == 0
     assert observer.calls[0]["check_url"] == "https://check.example.test/json"
     assert ProfileStore(isolated_profile_store).names() == ["default"]
+
+
+def test_the_flags_page_defaults_to_the_https_one_and_can_be_overridden_by_env(
+    observer: FakeObserver, monkeypatch: pytest.MonkeyPatch, isolated_profile_store: Path, tmp_path: Path
+) -> None:
+    assert _run(tmp_path) == 0
+    assert observer.calls[0]["reputation_url"] == "https://api.ipapi.is/"
+    monkeypatch.setenv("HIB_REPUTATION_URL", "https://flags.example.test/json")
+    assert _run(tmp_path, "--profile", "other") == 0
+    assert observer.calls[1]["reputation_url"] == "https://flags.example.test/json"
+
+
+@pytest.mark.parametrize("bad", ["file:///etc/passwd", "ftp://flags.example.test/", "flags.example.test", "https://"])
+def test_a_reputation_url_that_is_not_http_is_a_config_error(
+    observer: FakeObserver, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], bad: str
+) -> None:
+    monkeypatch.setenv("HIB_REPUTATION_URL", bad)
+    assert _run(tmp_path) == 4
+    assert not observer.calls
+    assert _out(capsys)["exit_code"] == 4
+
+
+def test_the_settings_carry_the_reputation_url(tmp_path: Path) -> None:
+    settings = load_settings(tmp_path / "missing.env", {"HIB_REPUTATION_URL": "https://flags.example.test/json"})
+    assert settings.reputation_url == "https://flags.example.test/json"
+    assert load_settings(tmp_path / "missing.env", {}).reputation_url is None
+
+
+def test_the_report_carries_the_mobile_flag_true_false_or_null(
+    observer: FakeObserver, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for index, mobile in enumerate((True, False, None)):
+        observer.observed = seen(mobile=mobile, cookies_at_start=0)
+        assert _run(tmp_path, "--profile", f"mob-{index}") == 0
+        out = _out(capsys)
+        assert "mobile" in out and out["mobile"] is mobile
+
+
+def test_unknown_flags_do_not_fail_even_with_strict_but_a_positive_flag_does(
+    observer: FakeObserver, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    observer.observed = seen(hosting=None, proxy_flag=None, mobile=None, cookies_at_start=0)
+    assert _run(tmp_path, "--strict") == 0
+    out = _out(capsys)
+    assert out["ok"] is True and out["hosting"] is None
+    assert any("reputation unknown" in note for note in out["problems_soft"])  # type: ignore[attr-defined]
+    observer.observed = seen(hosting=True, proxy_flag=None, cookies_at_start=0)
+    assert _run(tmp_path, "--profile", "other", "--strict") == 12
+
+
+def test_a_mobile_address_is_never_a_strict_failure() -> None:
+    assert assess(before(), seen(mobile=True), strict=True).ok is True
 
 
 def test_a_check_url_that_is_not_http_is_a_config_error(

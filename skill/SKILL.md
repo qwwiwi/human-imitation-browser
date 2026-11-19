@@ -45,7 +45,7 @@ This tool lets you use an ordinary browser on the owner's behalf, the way they w
 .venv/bin/python scripts/preflight.py --profile my-shop
 ```
 
-- It opens a neutral address-check page in the same profile and through the same proxy the real visit will use, never a real site, and prints one JSON line: `ok`, `proxy_works`, `country`, `city`, `network_owner`, `hosting`, `proxy_flag` (true, false or null when unknown), `address_changed`, `profile_memory` (`new`, `ok` or `empty`), `problems`, `problems_soft`, `screenshot`. It never prints an IP address, cookie names or values.
+- It opens a neutral address-check page in the same profile and through the same proxy the real visit will use, never a real site, and prints one JSON line: `ok`, `proxy_works`, `country`, `city`, `network_owner`, `hosting`, `proxy_flag`, `mobile` (true, false or null when unknown; `mobile` true means a mobile operator's address and never fails the check), `address_changed`, `profile_memory` (`new`, `ok` or `empty`), `problems`, `problems_soft`, `screenshot`. It never prints an IP address, cookie names or values.
 - Exit 0: go on. Exit 12: stop (the address changed since the profile's last pre-flight, the memory of a used profile is empty, or with `--strict` the address is flagged as hosting or proxy). Tell the owner the `problems` and, for a change, `address_change` (old and new country, city, owner). A proxy failure keeps its own code (5, 6).
 - `problems_soft` (for example a hosting flag) is a warning: tell the owner, and go on unless the owner said `--strict`.
 - `open_page.py` refuses a real address with exit 4 when the profile has no successful pre-flight in the last 12 hours (`HIB_PREFLIGHT_MAX_AGE_H`). Run the pre-flight; do not edit the settings or the profile to silence the refusal.
@@ -104,7 +104,7 @@ stdout carries one JSON line per page:
 
 On an error, one line `{"error": "...", "exit_code": N}`. Diagnostics go to stderr. `screenshot` is empty if the screenshot could not be taken. `visits` is how many runs this profile has made.
 
-For a `socks5://` proxy `check_proxy.py` cannot check the exit address: it prints `{"source", "checked": false, "note"}`; use `scripts/preflight.py --profile <name>` instead. Otherwise `check_proxy.py` prints `{"source", "country", "city", "org", "network_owner", "ru", "traffic_left_mb", "hosting", "proxy_flag"}`; if `ru` is false, tell the person the exit address is not in Russia. `hosting` and `proxy_flag` are a third-party reputation service's opinion (`null` when it did not answer) and can be wrong.
+For a `socks5://` proxy `check_proxy.py` cannot check the exit address: it prints `{"source", "checked": false, "note"}`; use `scripts/preflight.py --profile <name>` instead. Otherwise `check_proxy.py` prints `{"source", "country", "city", "org", "network_owner", "ru", "traffic_left_mb", "hosting", "proxy_flag", "mobile"}`; if `ru` is false, tell the person the exit address is not in Russia. `hosting`, `proxy_flag` and `mobile` are a third-party reputation service's opinion (`null` when it did not answer) and can be wrong.
 
 Judge the result by the screenshot and `challenge`, not by `status` alone: some sites answer 403 and still render the full page.
 
