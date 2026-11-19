@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Check that the proxy works: get it from the provider and look at the exit address.
 
-Prints one JSON line: {"source", "country", "city", "org", "ru", "traffic_left_mb"}.
+Prints one JSON line: {"source", "country", "city", "org", "network_owner", "ru", "traffic_left_mb",
+"hosting", "proxy_flag"}.
+"network_owner" is the network owner (the same text as "org"). "hosting" and "proxy_flag" come from one extra
+request to a public reputation service: true, false or null when it could not be read. They are a third
+party's opinion and can be wrong. A line "reputation: ..." also goes to the log (stderr).
 "ru" is true when the exit address is in Russia; the exit code stays 0 either way,
 because the proxy itself works.
 For a SOCKS proxy (socks5:// in HIB_PROXY_URL) the check cannot run here, because the
@@ -25,6 +29,7 @@ from hib.proxy import (
     call_mobileproxy,
     can_check_exit_ip,
     check_exit_ip,
+    check_reputation,
     proxy_from_api_response,
     proxy_from_url,
     redact,
@@ -39,6 +44,21 @@ SOCKS_NOTE = (
     "an extra package). Check it through the browser instead: "
     "scripts/open_page.py https://ipinfo.io/json --profile <name>"
 )
+
+
+def reputation_line(reputation: dict[str, bool | None]) -> str:
+    """Return the one log line about the address reputation.
+
+    Args:
+        reputation: The `hosting` and `proxy` flags (None means unknown).
+
+    Returns:
+        `reputation: hosting=yes, proxy=no`, or `reputation: unknown` when either flag is unknown.
+    """
+    hosting, flagged = reputation["hosting"], reputation["proxy"]
+    if hosting is None or flagged is None:
+        return "reputation: unknown"
+    return f"reputation: hosting={'yes' if hosting else 'no'}, proxy={'yes' if flagged else 'no'}"
 
 
 def main(argv: list[str]) -> int:
@@ -84,13 +104,23 @@ def main(argv: list[str]) -> int:
             return EXIT_OK
         logger.info("proxy received, checking the exit address")
         info = check_exit_ip(proxy)
+        reputation = check_reputation(proxy)
     except HibError as exc:
         message = redact(str(exc), secrets)
         logger.error("%s", message)
         sys.stdout.write(json.dumps({"error": message, "exit_code": exc.exit_code}, ensure_ascii=False) + "\n")
         return exc.exit_code
-    result = {"source": source, **info, "ru": info.get("country") == "RU", "traffic_left_mb": left}
+    result = {
+        "source": source,
+        **info,
+        "network_owner": info.get("org") or None,
+        "ru": info.get("country") == "RU",
+        "traffic_left_mb": left,
+        "hosting": reputation["hosting"],
+        "proxy_flag": reputation["proxy"],
+    }
     sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    logger.info("%s", reputation_line(reputation))
     if info.get("country") != "RU":
         logger.warning("the exit address is not in Russia (country=%s): check the proxy package", info.get("country"))
     if left is not None and left < 100:

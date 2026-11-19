@@ -1,6 +1,7 @@
 """Settings from the environment and an optional `.env` file."""
 
 import logging
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -14,6 +15,30 @@ logger = logging.getLogger(__name__)
 # Repository root: scripts/hib/env.py -> parents[2].
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = REPO_ROOT / ".env"
+DEFAULT_PREFLIGHT_MAX_AGE_H = 12.0
+
+
+def parse_preflight_max_age(value: str | None) -> float:
+    """Read how many hours a pre-flight check stays valid (env HIB_PREFLIGHT_MAX_AGE_H).
+
+    Args:
+        value: Text from the environment, or None for the default (12 hours).
+
+    Returns:
+        Hours.
+
+    Raises:
+        ConfigError: The text is not a finite non-negative number.
+    """
+    if value is None or not value.strip():
+        return DEFAULT_PREFLIGHT_MAX_AGE_H
+    try:
+        hours = float(value)
+    except ValueError:
+        raise ConfigError("HIB_PREFLIGHT_MAX_AGE_H must be a number of hours") from None
+    if not math.isfinite(hours) or hours < 0:
+        raise ConfigError("HIB_PREFLIGHT_MAX_AGE_H must be a number of hours, zero or more")
+    return hours
 
 
 @dataclass(frozen=True)
@@ -28,6 +53,8 @@ class Settings:
         proxy_city: Wanted proxy city (HIB_PROXY_CITY), or None.
         proxy_id: Provider's proxy id (HIB_PROXY_ID), or None to take it from the account.
         min_gap_s: Minimal seconds between navigations to one host (HIB_MIN_GAP_S).
+        check_url: Address-check page for the pre-flight (HIB_CHECK_URL), or None for the default.
+        preflight_max_age_h: Hours a successful pre-flight stays valid (HIB_PREFLIGHT_MAX_AGE_H).
     """
 
     mobileproxy_token: str | None
@@ -37,6 +64,8 @@ class Settings:
     proxy_city: str | None = None
     proxy_id: str | None = None
     min_gap_s: float = DEFAULT_MIN_GAP_S
+    check_url: str | None = None
+    preflight_max_age_h: float = DEFAULT_PREFLIGHT_MAX_AGE_H
 
     def __repr__(self) -> str:
         """Never show secret values."""
@@ -106,4 +135,6 @@ def load_settings(env_file: Path = DEFAULT_ENV_FILE, environ: Mapping[str, str] 
         proxy_city=pick("HIB_PROXY_CITY"),
         proxy_id=pick("HIB_PROXY_ID"),
         min_gap_s=parse_min_gap(pick("HIB_MIN_GAP_S")),
+        check_url=pick("HIB_CHECK_URL"),
+        preflight_max_age_h=parse_preflight_max_age(pick("HIB_PREFLIGHT_MAX_AGE_H")),
     )

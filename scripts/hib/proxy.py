@@ -15,12 +15,14 @@ from email.message import Message
 from typing import IO
 from urllib.parse import quote, unquote, urlsplit
 
-from hib.errors import ConfigError, ProxyApiError, ProxyAuthError, ProxyUnreachableError
+from hib.errors import ConfigError, HibError, ProxyApiError, ProxyAuthError, ProxyUnreachableError
 
 logger = logging.getLogger(__name__)
 
 MOBILEPROXY_API = "https://mobileproxy.space/api.html"
 API_TIMEOUT_S = 20
+# One public reputation service; its free tier is plain http only. The request carries no login or token.
+REPUTATION_URL = "http://ip-api.com/json/?fields=status,hosting,proxy"
 REQUIRED_FIELDS = ("proxy_hostname", "proxy_http_port", "proxy_login", "proxy_pass")
 
 ACCEPTED_FORMS = "http://host:port, http://login:password@host:port, socks5://host:port"
@@ -367,20 +369,13 @@ def can_check_exit_ip(proxy: ProxyConfig) -> bool:
     return proxy.scheme == "http"
 
 
-def check_exit_ip(proxy: ProxyConfig, url: str = "https://ipinfo.io/json") -> dict[str, str]:
-    """Open a neutral IP-info page through the proxy and return country, city, org.
-
-    Args:
-        proxy: Proxy to test.
-        url: JSON endpoint that describes the caller's IP.
-
-    Returns:
-        Mapping with the keys `country`, `city`, `org` (empty strings when absent).
+def _get_json_via_proxy(proxy: ProxyConfig, url: str) -> object:
+    """Fetch one JSON page through an HTTP proxy and return the decoded JSON.
 
     Raises:
-        ProxyUnreachableError: The proxy refused, failed the login or timed out, or
-            the NO_PROXY setting would make the request skip the proxy (the check
-            would then report this server's own address).
+        ProxyUnreachableError: The proxy refused, failed the login or timed out, the page
+            answered an error, or the NO_PROXY setting would make the request skip the proxy
+            (the answer would then describe this server's own address).
         ConfigError: The proxy is SOCKS: urllib cannot speak SOCKS (see `can_check_exit_ip`).
     """
     if not can_check_exit_ip(proxy):
@@ -395,14 +390,74 @@ def check_exit_ip(proxy: ProxyConfig, url: str = "https://ipinfo.io/json") -> di
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
     try:
         with opener.open(url, timeout=API_TIMEOUT_S) as resp:
-            info = json.loads(resp.read())
+            return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         raise ProxyUnreachableError(f"the check page answered HTTP {exc.code} through the proxy") from None
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         reason = redact(str(getattr(exc, "reason", exc)), proxy.secrets())
         hint = " (wrong login/password?)" if "407" in reason else ""
         raise ProxyUnreachableError(f"cannot get through the proxy: {reason}{hint}") from None
+
+
+def check_exit_ip(proxy: ProxyConfig, url: str = "https://ipinfo.io/json") -> dict[str, str]:
+    """Open a neutral IP-info page through the proxy and return country, city, org.
+
+    Args:
+        proxy: Proxy to test.
+        url: JSON endpoint that describes the caller's IP.
+
+    Returns:
+        Mapping with the keys `country`, `city`, `org` (empty strings when absent). `org` is the
+        network owner as the service names it.
+
+    Raises:
+        ProxyUnreachableError: The proxy refused, failed the login or timed out, or
+            the NO_PROXY setting would make the request skip the proxy (the check
+            would then report this server's own address).
+        ConfigError: The proxy is SOCKS: urllib cannot speak SOCKS (see `can_check_exit_ip`).
+    """
+    info = _get_json_via_proxy(proxy, url)
     if not isinstance(info, dict):
         raise ProxyUnreachableError("the check page returned unexpected data")
     return {key: str(info.get(key, "")) for key in ("country", "city", "org")}
+
+
+def parse_reputation(data: object) -> dict[str, bool | None]:
+    """Read the `hosting` and `proxy` flags from a reputation answer.
+
+    Args:
+        data: Decoded JSON of the reputation service, or None when there was no answer.
+
+    Returns:
+        Mapping with the keys `hosting` and `proxy`: True or False when the service said so
+        (status `success`, both values real booleans), otherwise None (unknown) for both.
+    """
+    if not isinstance(data, dict) or data.get("status") != "success":
+        return {"hosting": None, "proxy": None}
+    hosting, flagged = data.get("hosting"), data.get("proxy")
+    if not isinstance(hosting, bool) or not isinstance(flagged, bool):
+        return {"hosting": None, "proxy": None}
+    return {"hosting": hosting, "proxy": flagged}
+
+
+def check_reputation(proxy: ProxyConfig, url: str = REPUTATION_URL) -> dict[str, bool | None]:
+    """Ask one public reputation service whether the exit address is flagged as hosting or proxy.
+
+    This is one extra read-only request through the proxy. The answer is a third party's opinion
+    and can be wrong. Any failure (service down, rate limit, odd answer, SOCKS proxy) is not an
+    error: the flags are then None, which means "unknown".
+
+    Args:
+        proxy: Proxy to test.
+        url: JSON endpoint that describes the caller's IP with `hosting` and `proxy` fields.
+
+    Returns:
+        Mapping with the keys `hosting` and `proxy`: True, False or None (unknown).
+    """
+    try:
+        data = _get_json_via_proxy(proxy, url)
+    except HibError as exc:
+        logger.info("reputation lookup failed: %s", redact(str(exc), proxy.secrets()))
+        return parse_reputation(None)
+    return parse_reputation(data)
 

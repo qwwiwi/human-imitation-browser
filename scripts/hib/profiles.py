@@ -154,6 +154,11 @@ class ProfileData:
         proxy_session: Id of the sticky proxy session (not shown anywhere).
         last_exit: Country and city the proxy settings pointed to on the last run.
         last_navigation: Host -> time (seconds since epoch) of the last navigation.
+        last_preflight: Time (UTC, ISO 8601) of the last successful pre-flight, empty if none.
+        network: Country, city and network owner the last successful pre-flight saw
+            (keys `country`, `city`, `owner`); never an IP address.
+        cookie_count: How many cookies the browser held at the end of the last run (a count only), None if unknown.
+        preflight_visits: The visit counter when the last successful pre-flight passed.
     """
 
     name: str
@@ -167,6 +172,10 @@ class ProfileData:
     timezone: str = ""
     last_exit: dict[str, str] = field(default_factory=dict)
     last_navigation: dict[str, float] = field(default_factory=dict)
+    last_preflight: str = ""
+    network: dict[str, str] = field(default_factory=dict)
+    cookie_count: int | None = None
+    preflight_visits: int = 0
 
     def to_json(self) -> str:
         """Serialize to JSON text."""
@@ -190,6 +199,12 @@ class ProfileData:
         navigation = raw.get("last_navigation", {})
         if not isinstance(navigation, dict) or not all(isinstance(v, (int, float)) for v in navigation.values()):
             raise ValueError("bad last_navigation")
+        cookie_count = raw.get("cookie_count")
+        if cookie_count is not None and (not isinstance(cookie_count, int) or isinstance(cookie_count, bool) or cookie_count < 0):
+            raise ValueError("bad cookie_count")
+        preflight_visits = raw.get("preflight_visits", 0)
+        if not isinstance(preflight_visits, int) or isinstance(preflight_visits, bool) or preflight_visits < 0:
+            raise ValueError("bad preflight_visits")
         return cls(
             name=name,
             created=created,
@@ -202,6 +217,10 @@ class ProfileData:
             timezone=str(raw.get("timezone", "")),
             last_exit={str(k): str(v) for k, v in dict(raw.get("last_exit", {})).items()},
             last_navigation={str(k): float(v) for k, v in navigation.items()},
+            last_preflight=str(raw.get("last_preflight", "")),
+            network={str(k): str(v) for k, v in dict(raw.get("network", {})).items()},
+            cookie_count=cookie_count,
+            preflight_visits=preflight_visits,
         )
 
 
@@ -247,6 +266,48 @@ class Profile:
         self.data.last_used = _utc_now()
         self.save()
 
+    def record_preflight(self, network: dict[str, str], cookie_count: int | None) -> None:
+        """Remember that the pre-flight passed now, and what network and cookie count it saw.
+
+        Args:
+            network: Country, city and owner (keys `country`, `city`, `owner`), already cleaned; empty values are kept
+                as they were before so that an unknown value never erases a known one.
+            cookie_count: How many cookies the browser held, or None if unknown.
+        """
+        merged = dict(self.data.network)
+        merged.update({key: value for key, value in network.items() if value})
+        self.data.network = merged
+        if cookie_count is not None:
+            self.data.cookie_count = cookie_count
+        self.data.last_preflight = _utc_now()
+        self.data.preflight_visits = self.data.visits
+        self.save()
+
+    def note_cookie_count(self, cookie_count: int) -> None:
+        """Remember how many cookies the browser held at the end of a run (a count only)."""
+        if cookie_count != self.data.cookie_count:
+            self.data.cookie_count = cookie_count
+            self.save()
+
+    def preflight_is_fresh(self, max_age_h: float, now: datetime | None = None) -> bool:
+        """True when a successful pre-flight is recorded and is at most `max_age_h` hours old.
+
+        Args:
+            max_age_h: Longest accepted age, hours.
+            now: Current time (replaceable in tests).
+
+        Returns:
+            False when there is none, its time cannot be read, or it lies in the future.
+        """
+        try:
+            done = datetime.fromisoformat(self.data.last_preflight)
+        except ValueError:
+            return False
+        if done.tzinfo is None:
+            return False
+        age_h = ((now or datetime.now(timezone.utc)) - done).total_seconds() / 3600
+        return 0 <= age_h <= max_age_h
+
     def note_timezone(self, timezone_name: str) -> None:
         """Remember the time zone the browser showed; log when it differs from the last run.
 
@@ -278,6 +339,8 @@ class Profile:
             "locale": d.locale,
             "timezone": d.timezone,
             "last_exit": {key: clean_place(value) for key, value in d.last_exit.items()},
+            "last_preflight": d.last_preflight,
+            "network": {key: value for key, value in d.network.items() if key in ("country", "city", "owner")},
         }
 
 

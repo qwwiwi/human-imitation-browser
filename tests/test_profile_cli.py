@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import open_page
+from conftest import preflight_for_args
 from hib import browser, profile_cli
 from hib.browser import PageResult
 from hib.profiles import Profile, ProfileStore
@@ -36,7 +37,9 @@ def fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Recorder:
     return recorder
 
 
-def _run(tmp_path: Path, *args: str) -> int:
+def _run(tmp_path: Path, *args: str, preflighted: bool = True) -> int:
+    if preflighted:
+        preflight_for_args(args)  # the tool refuses a profile without a recent pre-flight
     return open_page.main(["--env-file", str(tmp_path / "missing.env"), *args])
 
 
@@ -64,9 +67,10 @@ def test_bad_profile_name_is_an_argument_error(fake: Recorder, tmp_path: Path) -
 
 
 def test_second_run_on_a_busy_profile_exits_10_with_json(isolated_profile_store: Path, fake: Recorder, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    preflight_for_args(())  # before the lock is taken: the profile has its pre-flight, so only the lock can refuse
     store = ProfileStore(isolated_profile_store)
     with store.acquire("default", lambda: {"navigator": {}}):
-        code = _run(tmp_path, URL)
+        code = _run(tmp_path, URL, preflighted=False)
     assert code == 10
     out = _lines(capsys)[0]
     assert out["exit_code"] == 10 and "default" in str(out["error"])
@@ -251,5 +255,5 @@ def test_missing_proxy_settings_exit_4_without_creating_a_profile(
 ) -> None:
     monkeypatch.delenv("HIB_PROXY_URL")
     monkeypatch.delenv("MOBILEPROXY_API_TOKEN", raising=False)
-    assert _run(tmp_path, URL) == 4
+    assert _run(tmp_path, URL, preflighted=False) == 4
     assert ProfileStore(isolated_profile_store).names() == []

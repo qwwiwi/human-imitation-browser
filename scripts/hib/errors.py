@@ -13,11 +13,14 @@ Exit codes (also documented in README and skill/SKILL.md):
     9  the site answered a server error (HTTP 5xx) and the page is not a challenge page
     10 the profile is in use by another run (two runs never share one profile)
     11 profile problem (not found, damaged, cannot be created or deleted)
+    12 pre-flight failed: the address changed, the profile memory is empty, or (with --strict) the
+       address is flagged as hosting/proxy. (8 was already taken by "browser failed to start".)
 """
 
 EXIT_OK = 0
 EXIT_UNEXPECTED = 1
 EXIT_CHALLENGE = 3
+EXIT_PREFLIGHT_FAILED = 12
 
 
 class HibError(Exception):

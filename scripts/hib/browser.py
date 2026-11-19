@@ -1,5 +1,6 @@
 """Open pages in Camoufox with human-like pacing and stop on challenge pages."""
 
+import json
 import logging
 import platform
 import random
@@ -147,7 +148,7 @@ def _read_page(page: Page) -> tuple[str, str]:
     return text, title
 
 
-def _screenshot_path(out_dir: Path, url: str) -> Path:
+def screenshot_path(out_dir: Path, url: str) -> Path:
     """Build a unique screenshot file name from the time and the host."""
     host = (urlsplit(url).hostname or "page").replace(":", "_")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
@@ -213,7 +214,7 @@ def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> 
         logger.warning("challenge page detected (%s): stop and show the screenshot to a person", check.reason)
     elif status is not None and status >= 500:
         raise PageServerError(f"the site answered HTTP {status} (a server error, not a challenge page)")
-    shot = _screenshot_path(options.out_dir, page.url)
+    shot = screenshot_path(options.out_dir, page.url)
     try:
         page.screenshot(path=str(shot))
         shot_path = str(shot)
@@ -330,6 +331,58 @@ def _observed_timezone(page: Page) -> str:
         return ""
 
 
+def fetch_json_page(page: Page, url: str, timeout_s: float, secrets: list[str]) -> object:
+    """Open a neutral JSON address in the tab and return the decoded JSON.
+
+    No human-like actions and no challenge detection: this is for the address-check pages
+    of the pre-flight, never for a real site.
+
+    Args:
+        page: Browser tab to use.
+        url: Address of a page that answers with JSON.
+        timeout_s: Load timeout in seconds.
+        secrets: Values to strip from any error text.
+
+    Returns:
+        The decoded JSON.
+
+    Raises:
+        PageTimeoutError: The page did not load in time.
+        ProxyUnreachableError: Firefox reported a proxy failure.
+        HibError: Another navigation error, an answer other than HTTP 200, or a body that is not JSON.
+    """
+    try:
+        response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_s * 1000)
+    except PlaywrightTimeoutError:
+        raise PageTimeoutError(f"the address-check page did not load in {timeout_s:.0f} s") from None
+    except PlaywrightError as exc:
+        message = redact(str(exc).splitlines()[0] if str(exc) else type(exc).__name__, secrets)
+        if any(marker in message for marker in PROXY_ERROR_MARKERS):
+            raise ProxyUnreachableError(f"the proxy failed: {message}") from None
+        raise HibError(f"cannot open the address-check page: {message}") from None
+    if response is None or response.status != 200:
+        raise HibError(f"the address-check page answered HTTP {response.status if response else 'nothing'}")
+    try:
+        return json.loads(response.text())
+    except (PlaywrightError, ValueError):
+        raise HibError("the address-check page did not return JSON") from None
+
+
+def stored_cookie_count(page: Page) -> int | None:
+    """Count the cookies the browser holds (a number only: names and values are never read out).
+
+    Args:
+        page: A tab of the profile's browser.
+
+    Returns:
+        The count, or None when the browser cannot say.
+    """
+    try:
+        return len(page.context.cookies())
+    except (PlaywrightError, AttributeError):
+        return None
+
+
 def open_pages(
     urls: list[str],
     proxy: ProxyConfig | None,
@@ -371,5 +424,14 @@ def open_pages(
             result = open_one(page, url, options, secrets)
             emit(result)
             if result.challenge:
+                _remember_cookie_count(page, profile)
                 return True
+        _remember_cookie_count(page, profile)
     return False
+
+
+def _remember_cookie_count(page: Page, profile: Profile | None) -> None:
+    """Keep the number of cookies in the profile: the next pre-flight checks that the memory did not vanish."""
+    count = stored_cookie_count(page) if profile else None
+    if profile and count is not None:
+        profile.note_cookie_count(count)

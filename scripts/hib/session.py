@@ -19,6 +19,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from hib.env import Settings
 from hib.errors import ConfigError, ProxyApiError, ProxyAuthError
 from hib.profiles import clean_place, write_private
 from hib.proxy import ProxyConfig, call_mobileproxy, proxy_from_api_response, proxy_from_url, redact
@@ -62,6 +63,28 @@ class _Settings:
     city: str
     country: str
     http: str
+
+
+def fixed_proxy_from_settings(settings: Settings, no_proxy: bool = False) -> ProxyConfig | None:
+    """Check the proxy settings before any profile is touched.
+
+    Args:
+        settings: Loaded settings.
+        no_proxy: True for `--no-proxy`.
+
+    Returns:
+        The proxy from HIB_PROXY_URL (used as it is), or None when the provider API is used or no proxy is wanted.
+
+    Raises:
+        ConfigError: No proxy is configured, or HIB_PROXY_URL is malformed.
+    """
+    if no_proxy:
+        return None
+    if settings.proxy_url:
+        return proxy_from_url(settings.proxy_url)
+    if not settings.mobileproxy_token:
+        raise ConfigError("no proxy configured: put MOBILEPROXY_API_TOKEN (or HIB_PROXY_URL) into the .env file")
+    return None
 
 
 def new_session_id() -> str:

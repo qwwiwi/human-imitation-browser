@@ -21,12 +21,13 @@ import logging
 import sys
 from pathlib import Path
 
-from hib.env import DEFAULT_ENV_FILE, REPO_ROOT, Settings, load_settings
+from hib.env import DEFAULT_ENV_FILE, REPO_ROOT, load_settings
 from hib.errors import EXIT_CHALLENGE, EXIT_OK, EXIT_UNEXPECTED, ConfigError, HibError, ProfileError
 from hib.pace import Pacer
+from hib.preflight import require_fresh_preflight
 from hib.profiles import DEFAULT_PROFILE, ProfileStore, profiles_root, validate_profile_name
-from hib.proxy import ProxyConfig, proxy_from_url, redact, resolve_proxy, warn_if_open_proxy
-from hib.session import resolve_session_proxy
+from hib.proxy import ProxyConfig, redact, resolve_proxy, warn_if_open_proxy
+from hib.session import fixed_proxy_from_settings, resolve_session_proxy
 
 logger = logging.getLogger("open_page")
 
@@ -92,28 +93,6 @@ def emit_json(data: dict[str, object]) -> None:
     sys.stdout.flush()
 
 
-def _check_proxy_settings(settings: Settings, no_proxy: bool) -> ProxyConfig | None:
-    """Check the proxy settings before any profile is touched.
-
-    Args:
-        settings: Loaded settings.
-        no_proxy: True for `--no-proxy`.
-
-    Returns:
-        The proxy from HIB_PROXY_URL (used as it is), or None when the provider API is used or no proxy is wanted.
-
-    Raises:
-        ConfigError: No proxy is configured, or HIB_PROXY_URL is malformed.
-    """
-    if no_proxy:
-        return None
-    if settings.proxy_url:
-        return proxy_from_url(settings.proxy_url)
-    if not settings.mobileproxy_token:
-        raise ConfigError("no proxy configured: put MOBILEPROXY_API_TOKEN (or HIB_PROXY_URL) into the .env file")
-    return None
-
-
 def main(argv: list[str]) -> int:
     """Run the command.
 
@@ -138,7 +117,7 @@ def main(argv: list[str]) -> int:
             block_images=args.no_images,
             pause_between_s=(args.pause_min, args.pause_max),
         )
-        fixed_proxy = _check_proxy_settings(settings, args.no_proxy)
+        fixed_proxy = fixed_proxy_from_settings(settings, args.no_proxy)
         if fixed_proxy:
             secrets.extend(fixed_proxy.secrets())
             warn_if_open_proxy(fixed_proxy)
@@ -159,6 +138,8 @@ def main(argv: list[str]) -> int:
         else:
             store = ProfileStore(profiles_root(settings.profiles_dir))
             with store.acquire(args.profile or DEFAULT_PROFILE, browser.make_fingerprint) as profile:
+                # Before any proxy call or browser start: a real address needs a recent pre-flight check.
+                require_fresh_preflight(profile, settings.preflight_max_age_h)
                 if fixed_proxy:
                     logger.info("using the proxy from HIB_PROXY_URL as it is (choose a sticky session at your provider)")
                     proxy = fixed_proxy
