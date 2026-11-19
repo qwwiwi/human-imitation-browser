@@ -42,7 +42,7 @@ logger = logging.getLogger("check_proxy")
 SOCKS_NOTE = (
     "the exit address was NOT checked: this script cannot go through a SOCKS proxy (no SOCKS support without "
     "an extra package). Check it through the browser instead: "
-    "scripts/open_page.py https://ipinfo.io/json --profile <name>"
+    "scripts/preflight.py --profile <name>"
 )
 
 

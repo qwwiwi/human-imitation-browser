@@ -9,6 +9,8 @@ Prints one JSON line per page to stdout:
     {"url", "status", "title", "text_chars", "screenshot", "challenge", "reason", "profile", "visits"}
 On an error prints one JSON line {"error", "exit_code"} instead
 (a malformed HIB_PROXY_URL is exit 4, an HTTP 5xx answer is exit 9, a profile in use is exit 10).
+A profile without a successful `scripts/preflight.py` in the last 12 hours (HIB_PREFLIGHT_MAX_AGE_H) is refused
+with exit 4 before any proxy call or browser start; `--ephemeral` test pages are exempt.
 Diagnostics go to stderr. Exit codes are listed in hib/errors.py and README.md.
 
 Example:

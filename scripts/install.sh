@@ -150,4 +150,5 @@ fi
 log "done. Next:"
 echo "    nano ${ENV_FILE}        # put MOBILEPROXY_API_TOKEN=..."
 echo "    ${VENV_PY} ${REPO_DIR}/scripts/check_proxy.py"
+echo "    ${VENV_PY} ${REPO_DIR}/scripts/preflight.py     # check the address and the profile before the first real site"
 echo "    ${VENV_PY} ${REPO_DIR}/scripts/open_page.py https://www.ozon.ru/"

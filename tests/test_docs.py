@@ -2,6 +2,8 @@
 
 import re
 
+import pytest
+
 from hib.env import REPO_ROOT
 
 SKILL = (REPO_ROOT / "skill" / "SKILL.md").read_text(encoding="utf-8")
@@ -132,3 +134,134 @@ def test_h10_skill_has_no_exception_for_handing_over_a_sellers_contact() -> None
 
 def test_h10_no_advice_to_drop_an_option_when_challenges_appear() -> None:
     assert "drop it if challenges appear" not in SKILL
+
+
+# ---- «check the address first» page, the pre-flight step and the address list -----------------
+
+import json  # noqa: E402
+
+from hib.preflight import Before, Seen, assess, build_report  # noqa: E402
+
+PAGE = (REPO_ROOT / "docs" / "check-address.md").read_text(encoding="utf-8")
+
+
+def _section(text: str, title: str) -> str:
+    """Return the text under a heading (any level) up to the next heading of the same or a higher level."""
+    level = re.search(rf"^(#+) {re.escape(title)}", text, flags=re.M)
+    assert level, title
+    rest = text[level.end() :]
+    following = re.search(rf"^#{{1,{len(level.group(1))}}} ", rest, flags=re.M)
+    return rest[: following.start()] if following else rest
+
+
+def _first_json_block(text: str) -> dict[str, object]:
+    return json.loads(re.search(r"```json\n(.+?)\n```", text, flags=re.S).group(1))  # type: ignore[union-attr]
+
+
+def test_the_address_page_has_two_parts_and_the_measured_facts_exactly() -> None:
+    assert PAGE.startswith("# Сначала проверьте адрес")
+    assert PAGE.index("## Проверка одной командой") < PAGE.index("## Посмотреть глазами")
+    assert "scripts/preflight.py" in _section(PAGE, "Проверка одной командой")
+    assert "scripts/check_proxy.py" in PAGE
+    measured = _section(PAGE, "Что мы измерили сами")
+    for phrase in (
+        "2026-11-19",
+        "по одной попытке",
+        "это не статистика",
+        "домашний интернет-адрес: hosting – нет, proxy – нет",
+        "hosting – да, proxy – да",
+        "Один сайт объявлений отказал уже на самом прокси",
+        "один сайт недвижимости не загрузился за 60 секунд",
+        "один маркетплейс показал проверку и домашнему адресу при первом заходе",
+    ):
+        assert phrase in measured, phrase
+    assert re.search(r"^\|.+\|$", _section(PAGE, "Как читать результат"), flags=re.M)  # the reading table
+
+
+def test_the_address_page_names_exactly_three_third_party_pages_to_open_by_hand() -> None:
+    by_hand = _section(PAGE, "Посмотреть глазами")
+    hosts = {match.split("/")[0] for match in re.findall(r"https?://([^\s)]+)", by_hand)}
+    assert hosts == {"ipinfo.io", "ip-api.com", "browserleaks.com"}
+    assert "https://browserleaks.com/ip" in by_hand
+    assert "могут ошибаться" in by_hand and "противоречить" in by_hand
+    assert "не зависит" in by_hand  # the tool does not depend on the last one
+
+
+def test_the_address_page_keeps_the_stop_rule_and_makes_no_promise() -> None:
+    assert "не обещает, что сайт не покажет проверку" in PAGE
+    rule = _section(PAGE, "Правило остановки")
+    assert "Проверку на сайте проходит человек" in rule and "стоп" in rule
+
+
+def test_the_address_page_has_no_forbidden_wording_no_ip_and_no_legality_claim() -> None:
+    lowered = PAGE.lower()
+    for word in ("обход", "невидим", "не отличат", "undetect", "bypass", "stealth", "антидетект", "маскир", "evade"):
+        assert word not in lowered, word
+    assert not re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", PAGE)
+    assert "легальн" not in lowered and "законн" not in lowered
+    assert "много аккаунтов" not in lowered and "много профилей" not in lowered
+
+
+def test_readme_points_to_the_page_and_lists_three_kinds_of_address() -> None:
+    assert "docs/check-address.md" in README
+    block = _section(README, "Где взять адрес")
+    assert len(re.findall(r"^- \*\*", block, flags=re.M)) == 3
+    assert "https://proxyline.net?ref=158579 (партнёрская ссылка)" in block
+    assert "около 2 долларов США в месяц" in block and "«hosting»" in block
+    assert "docs/home-proxy.md" in block
+    assert "Резидентный или мобильный" in block
+
+
+def test_existing_partner_links_keep_their_label() -> None:
+    assert "https://mobileproxy.space/?p=286413 (партнёрская ссылка)" in GUIDE
+    assert "https://mobileproxy.space/user.html?free&p=286413 (партнёрская ссылка)" in GUIDE
+
+
+def test_guide_links_the_address_page_where_the_proxy_is_introduced() -> None:
+    assert "check-address.md" in _section(GUIDE, "Шаг 2. Прокси")
+
+
+PREFLIGHT_STEPS = [
+    pytest.param(README, "Проверка перед заходом", id="readme"),
+    pytest.param(GUIDE, "4.2. Проверка перед заходом", id="guide"),
+    pytest.param(PAGE, "Проверка одной командой", id="page"),
+]
+
+
+@pytest.mark.parametrize(("text", "title"), PREFLIGHT_STEPS)
+def test_the_pre_flight_step_has_the_command_a_sample_and_the_meaning_of_every_line(text: str, title: str) -> None:
+    step = _section(text, title)
+    assert "scripts/preflight.py --profile" in step
+    sample = _first_json_block(step)
+    for field_name in sample:
+        assert f"`{field_name}`" in step, field_name  # every printed field is explained in plain words
+    assert not re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", step)
+    assert "придуманы" in step  # the sample is said to be made up, not a real run
+
+
+@pytest.mark.parametrize(("text", "title"), PREFLIGHT_STEPS)
+def test_the_sample_output_has_exactly_the_fields_the_command_prints(text: str, title: str) -> None:
+    seen = Seen("RU", "C", "O", False, False, 1, 1, True, False, "out/x.png")
+    real = set(build_report("p", seen, assess(Before(0, "", {}, None), seen)))
+    assert set(_first_json_block(_section(text, title))) == real
+
+
+def test_the_skill_has_the_mandatory_pre_flight_rule_next_to_the_profile_rule() -> None:
+    headings = re.findall(r"^## (.+)$", SKILL, flags=re.M)
+    assert headings[:3] == ["Profile rule (mandatory, read first)", "Allowed use (mandatory)", "Pre-flight (mandatory)"]
+    rule = _section(SKILL, "Pre-flight (mandatory)")
+    for phrase in (
+        "Before the first real site in a session run the pre-flight for the profile",
+        "If it fails, stop and tell the owner what changed",
+        "Do not switch to another profile or proxy to get around it",
+        "scripts/preflight.py --profile",
+        "Never use `--accept-address-change` yourself",
+    ):
+        assert phrase in rule, phrase
+
+
+def test_exit_code_12_is_documented_everywhere_and_8_stays_the_browser() -> None:
+    assert re.search(r"^\| 12 \|", SKILL, flags=re.M) and re.search(r"^\| 12 \|", GUIDE, flags=re.M)
+    assert re.search(r"^\| 8 \| browser did not start", SKILL, flags=re.M)
+    errors = (REPO_ROOT / "scripts" / "hib" / "errors.py").read_text(encoding="utf-8")
+    assert "12 pre-flight failed" in errors

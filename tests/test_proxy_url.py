@@ -312,7 +312,7 @@ def test_check_proxy_script_says_plainly_that_socks_cannot_be_checked_here(
         assert check_proxy.main(["--env-file", str(tmp_path / "missing.env")]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["checked"] is False
-    assert "open_page.py https://ipinfo.io/json --profile" in out["note"]
+    assert "scripts/preflight.py --profile <name>" in out["note"]  # open_page.py now needs a pre-flight first
     assert "SOCKS" in out["note"]
     assert "ru" not in out
 
