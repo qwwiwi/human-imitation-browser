@@ -20,7 +20,7 @@ import os
 import re
 import secrets
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -78,6 +78,32 @@ def profiles_root(env_value: str | None, home: Path | None = None) -> Path:
     if root.resolve().is_relative_to(REPO_ROOT):
         raise ConfigError("HIB_PROFILES_DIR is inside the project folder: profile data must stay outside the repository")
     return root
+
+
+_PLACE_PATTERN = re.compile(r"[^\W\d_]+(?:[ .'\-][^\W\d_]+)*")
+_PLACE_MAX_CHARS = 40
+
+
+def clean_place(value: str, secrets: Iterable[str] = ()) -> str:
+    """Return a country or city label only if it looks like a place name, otherwise an empty string.
+
+    The provider's text is untrusted: it is shown by `profiles.py show` and kept in profile.json.
+    A label with digits or symbols, a long one, or one that contains any of the given secrets
+    (case-insensitive) is dropped.
+
+    Args:
+        value: Text from the provider answer or from profile.json.
+        secrets: Values that must never be stored or shown (token, proxy login and password).
+
+    Returns:
+        The label, or "".
+    """
+    if len(value) > _PLACE_MAX_CHARS or not _PLACE_PATTERN.fullmatch(value):
+        return ""
+    low = value.lower()
+    if any(len(secret) >= 3 and secret.lower() in low for secret in secrets):
+        return ""
+    return value
 
 
 def _utc_now() -> str:
@@ -251,7 +277,7 @@ class Profile:
             "screen": d.screen,
             "locale": d.locale,
             "timezone": d.timezone,
-            "last_exit": d.last_exit,
+            "last_exit": {key: clean_place(value) for key, value in d.last_exit.items()},
         }
 
 

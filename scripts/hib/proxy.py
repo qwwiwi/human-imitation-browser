@@ -15,7 +15,7 @@ from email.message import Message
 from typing import IO
 from urllib.parse import quote, unquote, urlsplit
 
-from hib.errors import ConfigError, ProxyApiError, ProxyUnreachableError
+from hib.errors import ConfigError, ProxyApiError, ProxyAuthError, ProxyUnreachableError
 
 logger = logging.getLogger(__name__)
 
@@ -326,8 +326,9 @@ def call_mobileproxy(command: str, token: str, params: Mapping[str, str] | None 
         with urllib.request.build_opener(_NoRedirect).open(req, timeout=API_TIMEOUT_S) as resp:
             body = resp.read()
     except urllib.error.HTTPError as exc:
-        hint = " (check MOBILEPROXY_API_TOKEN)" if exc.code in (401, 403) else ""
-        raise ProxyApiError(f"proxy API answered HTTP {exc.code}{hint}") from None
+        if exc.code in (401, 403):
+            raise ProxyAuthError(f"proxy API answered HTTP {exc.code} (check MOBILEPROXY_API_TOKEN)") from None
+        raise ProxyApiError(f"proxy API answered HTTP {exc.code}") from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         reason = redact(str(getattr(exc, "reason", exc)), [token])
         raise ProxyApiError(f"proxy API is not reachable: {reason}") from None

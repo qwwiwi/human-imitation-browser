@@ -38,6 +38,10 @@ class ProxyApiError(HibError):
     exit_code = 5
 
 
+class ProxyAuthError(ProxyApiError):
+    """The proxy provider API refused the token (HTTP 401 or 403): the account settings must be fixed."""
+
+
 class ProxyUnreachableError(HibError):
     """The proxy did not accept the connection or the login."""
 

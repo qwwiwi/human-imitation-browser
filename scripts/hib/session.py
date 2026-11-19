@@ -9,6 +9,7 @@ for up to the session time; this is a target, not a guarantee.
 No login, password or full proxy address is ever logged or printed here.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -18,13 +19,15 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from hib.errors import ConfigError, ProxyApiError
-from hib.profiles import write_private
+from hib.errors import ConfigError, ProxyApiError, ProxyAuthError
+from hib.profiles import clean_place, write_private
 from hib.proxy import ProxyConfig, call_mobileproxy, proxy_from_api_response, proxy_from_url, redact
 
 logger = logging.getLogger(__name__)
 
 CACHE_TTL_S = 300.0
+# The last answer may stand in for a failed API call (not for a refused token) for this long only.
+STALE_MAX_S = 24 * 3600.0
 STICKY_MINUTES = 120
 RATE_LIMIT_PAUSE_S = 5.5
 SETTINGS_COMMAND = "residential_settings"
@@ -124,13 +127,24 @@ def _build(http_url: str, session_id: str, country: str, city: str) -> SessionPr
     return SessionProxy(proxy=proxy, country=country, city=city)
 
 
-def _read_cache(path: Path) -> dict[str, object] | None:
-    """Return the cached answer, or None when absent or unreadable."""
+def _binding(token: str, proxy_id: str | None, state: str | None, city: str | None) -> str:
+    """Return a fingerprint of the settings an answer was fetched with (a hash: the token is not stored)."""
+    raw = json.dumps([token, proxy_id or "", state or "", city or ""])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _read_cache(path: Path, binding: str) -> dict[str, object] | None:
+    """Return the cached answer if it was fetched with the same settings, else None."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if isinstance(data, dict) and isinstance(data.get("http"), str) and isinstance(data.get("fetched_at"), (int, float)):
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("http"), str)
+        and isinstance(data.get("fetched_at"), (int, float))
+        and data.get("binding") == binding
+    ):
         return data
     return None
 
@@ -161,7 +175,8 @@ def resolve_session_proxy(
 
     Args:
         token: mobileproxy.space API token.
-        cache_path: File where the answer is kept for CACHE_TTL_S seconds (owner-only).
+        cache_path: File where the answer is kept for CACHE_TTL_S seconds (owner-only). An answer is used only
+            with the same token, proxy_id, state and city it was fetched with.
         session_id: The profile's session id.
         proxy_id: Proxy id, if known; otherwise taken from the account and remembered.
         state: Wanted state/region (HIB_PROXY_STATE); sent to the provider only if it differs. Unverified values.
@@ -174,9 +189,11 @@ def resolve_session_proxy(
         The proxy and the country/city the settings point to.
 
     Raises:
-        ProxyApiError: The API failed and there is no earlier answer to fall back to.
+        ProxyAuthError: The API refused the token (no fallback; the kept answer is deleted).
+        ProxyApiError: The API failed and there is no usable earlier answer (same settings, at most STALE_MAX_S old).
     """
-    cached = _read_cache(cache_path)
+    binding = _binding(token, proxy_id, state, city)
+    cached = _read_cache(cache_path, binding)
     if cached and 0 <= now() - float(str(cached["fetched_at"])) < CACHE_TTL_S:
         logger.info("using the proxy answer kept a moment ago (no API call)")
         return _build(str(cached["http"]), session_id, str(cached.get("country", "")), str(cached.get("city", "")))
@@ -200,13 +217,20 @@ def resolve_session_proxy(
             else:
                 sleep(RATE_LIMIT_PAUSE_S)  # the same request may come once per 5 seconds
                 settings = _parse_settings(call(SETTINGS_COMMAND, token, {"proxy_id": pid}))
-        result = _build(settings.http, session_id, settings.country, settings.city)
+        result = _build(settings.http, session_id, "", "")
+        hidden = [token, *result.proxy.secrets()]
+        country, city_label = clean_place(settings.country, hidden), clean_place(settings.city, hidden)
+        result = SessionProxy(proxy=result.proxy, country=country, city=city_label)
+    except ProxyAuthError:
+        cache_path.unlink(missing_ok=True)  # the token is refused: nothing kept for it may be reused
+        raise
     except ProxyApiError as exc:
-        if not cached:
+        age = now() - float(str(cached["fetched_at"])) if cached else -1.0
+        if not cached or not 0 <= age <= STALE_MAX_S:
             raise
         logger.warning("proxy API failed (%s); using the last proxy answer", redact(str(exc), [token]))
         return _build(str(cached["http"]), session_id, str(cached.get("country", "")), str(cached.get("city", "")))
-    entry = {"fetched_at": now(), "proxy_id": pid, "http": settings.http, "country": settings.country, "city": settings.city}
+    entry = {"fetched_at": now(), "binding": binding, "proxy_id": pid, "http": settings.http, "country": country, "city": city_label}
     try:
         write_private(cache_path, json.dumps(entry))
     except OSError as exc:

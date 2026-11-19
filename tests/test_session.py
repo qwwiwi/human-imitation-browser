@@ -163,7 +163,7 @@ def test_cache_expires_and_the_api_is_asked_again(tmp_path: Path) -> None:
 def test_a_cached_proxy_gets_the_current_session_id(tmp_path: Path) -> None:
     api = FakeApi(_answer())
     _resolve(api, tmp_path, now=1000.0)
-    other = resolve_session_proxy("t", tmp_path / "proxy-cache.json", "othersession", proxy_id="77", now=lambda: 1001.0, call=api)
+    other = resolve_session_proxy("token-1", tmp_path / "proxy-cache.json", "othersession", proxy_id="77", now=lambda: 1001.0, call=api)
     assert "-session-othersession-" in other.proxy.username
 
 
