@@ -64,6 +64,12 @@ class ProxyConfig:
     scheme: str = "http"
 
     @property
+    def _authority(self) -> str:
+        """`host:port`, with brackets around an IPv6 literal (URLs need them)."""
+        host = f"[{self.host}]" if ":" in self.host and not self.host.startswith("[") else self.host
+        return f"{host}:{self.port}"
+
+    @property
     def has_credentials(self) -> bool:
         """True when the proxy asks for a login and password."""
         return bool(self.username and self.password)
@@ -73,7 +79,7 @@ class ProxyConfig:
 
         The `username` and `password` keys are present only when the proxy has them.
         """
-        result = {"server": f"{self.scheme}://{self.host}:{self.port}"}
+        result = {"server": f"{self.scheme}://{self._authority}"}
         if self.username and self.password:
             result["username"] = self.username
             result["password"] = self.password
@@ -82,10 +88,10 @@ class ProxyConfig:
     def as_url(self) -> str:
         """Return `scheme://[user:pass@]host:port`; credentials, when present, are percent-encoded."""
         if not (self.username and self.password):
-            return f"{self.scheme}://{self.host}:{self.port}"
+            return f"{self.scheme}://{self._authority}"
         user = quote(self.username, safe="")
         pwd = quote(self.password, safe="")
-        return f"{self.scheme}://{user}:{pwd}@{self.host}:{self.port}"
+        return f"{self.scheme}://{user}:{pwd}@{self._authority}"
 
     def secrets(self) -> list[str]:
         """Return the values that must never be printed (an empty list for a proxy without a login)."""

@@ -210,7 +210,7 @@ def test_the_browser_time_zone_is_saved_in_the_profile(isolated_profile_store: P
     assert ProfileStore(isolated_profile_store).load("default").data.timezone == "Europe/Moscow"
 
 
-def test_pace_between_runs_waits_the_rest_of_the_gap_before_the_browser_starts(
+def test_pace_between_runs_waits_the_rest_of_the_gap_before_the_first_navigation(
     isolated_profile_store: Path, fake_browser: list[str], tmp_path: Path
 ) -> None:
     slept: list[float] = []

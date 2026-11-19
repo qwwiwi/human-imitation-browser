@@ -340,8 +340,6 @@ def open_pages(
     """
     options.out_dir.mkdir(parents=True, exist_ok=True)
     secrets = proxy.secrets() if proxy else []
-    if pacer:
-        pacer.wait_turn(urlsplit(urls[0]).hostname or "")  # before the start: do not hold a browser while waiting
     with launch(proxy, options, profile) as page:
         if profile:
             profile.record_visit()  # counted only now: a browser that did not start is not a visit
@@ -351,8 +349,10 @@ def open_pages(
                 low, high = options.pause_between_s
                 logger.info("pausing %.0f-%.0f s before the next page", low, high)
                 _sleep(low, high)
-                if pacer:
-                    pacer.wait_turn(urlsplit(url).hostname or "")
+            if pacer:
+                # Right before the navigation (also the first one, after a slow browser start):
+                # the gap is checked and the time recorded at the moment the page is requested.
+                pacer.wait_turn(urlsplit(url).hostname or "")
             result = open_one(page, url, options, secrets)
             emit(result)
             if result.challenge:
