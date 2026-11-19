@@ -1,6 +1,6 @@
 ---
 name: human-imitation-browser
-description: Open a web page (Russian sites such as Ozon, Avito, Cian, Aviasales and similar) in a real browser through a Russian residential proxy, always as one returning visitor (the same named browser profile, fingerprint and proxy session), with human-like pacing; get back status, title, text size and a screenshot, and hand any captcha or anti-bot page to the person instead of solving it. Use when the person asks to look at, check or screenshot a page that blocks server traffic.
+description: For the owner's own personal tasks, open a web page (Russian sites such as Ozon, Avito, Cian, Aviasales and similar) in a real browser through a Russian residential proxy, always as one returning visitor (the same named browser profile, fingerprint and proxy session), with human-like pacing; get back status, title, text size and a screenshot, and hand any captcha or anti-bot page to the person instead of solving it. Use when the person asks to look at, check or screenshot a page that does not open from the server directly. Never for collecting data about other people.
 ---
 
 # human-imitation-browser
@@ -23,12 +23,26 @@ Why: a site remembers a returning browser (cookies, cache, history, the same fin
 
 The profile folder (`~/.local/share/hib/profiles/NAME/`) is effectively a key to the session and to any account logged in there. Never print, send, copy, commit or open its files. Delete a profile (`scripts/profiles.py delete NAME`) only when the person asks.
 
+## Allowed use (mandatory)
+
+This tool lets you use an ordinary browser on the owner's behalf, the way they would themselves, for their own personal tasks: find and compare a product, look at prices and listings, check a ticket price, put together a basket or place an order in the owner's own account when they ask.
+
+- **Personal tasks of the owner only.** Not for other people's tasks, not for a business, not for monitoring competitors.
+- **Never collect, store or output other people's personal data**: names, phone numbers, contacts, profiles of sellers, landlords, reviewers or any other users. If a page shows such data, do not copy it into your results, notes or files. The one exception: the owner needs the contact of one specific seller for their own purchase; then give only that contact, only to the owner. In Russia personal data is regulated by law, and collecting it without a legal basis is an offence.
+- **No bulk or scheduled collection.** Do not loop over listings, search results or catalogues, do not run on a schedule, do not build datasets or tables of listings. Open only the pages the owner asked for.
+- **Never try to get past a login, a paywall, a block or a captcha**: not by program, not through solver services, not by changing the proxy, the profile or the browser.
+- **When the site refuses, stop and report.** A block page, a check, a captcha or a login wall ends the work on that site for this task; tell the owner what you saw (see the captcha rule below).
+- **Orders and payments only on the owner's explicit instruction for that specific order.** An instruction for one order does not cover the next one.
+- **Never enter payment details** (card number, security code, confirmation codes) yourself unless the owner has explicitly set that up.
+- No reviews, ratings, messages or any other activity meant to influence the site; one account and one profile per owner.
+- For the owner's own seller cabinet, suggest the marketplace's official seller API instead of the browser.
+
 ## When to use
 
-- The person asks you to open, look at, check or screenshot a page on a site that blocks server addresses (Ozon, Avito, Cian, Aviasales and similar Russian services).
-- A normal fetch from the server returns a block page (for example 403 from a marketplace).
+- The person asks you, for their own task, to open, look at, check or screenshot a page on a site that does not open from a server address (Ozon, Avito, Cian, Aviasales and similar Russian services).
+- A normal fetch from the server gets an error page (for example 403 from a marketplace). If the same site also refuses through this tool, stop (see Allowed use).
 
-Do not use it for bulk collection, for many pages "just in case", or for anything the person did not ask for. For a seller's own shop data, suggest the marketplace's official seller API instead.
+Do not open many pages "just in case" or anything the person did not ask for.
 
 ## How to call
 
@@ -114,7 +128,6 @@ A live hand-off (the person solving the captcha from a phone in the same browser
 
 - One page at a time. Never run several copies of the script at once (a second run on the same profile is refused with exit code 10).
 - Put related pages into one call so they share one session; keep the default pauses.
-- Do not loop over pages, search results or catalogues. Open only what the person asked for.
 - If a site starts showing challenges, stop working with it for this task.
 
 ## Secrets and accounts
@@ -122,5 +135,5 @@ A live hand-off (the person solving the captcha from a phone in the same browser
 - Never print, log, quote or send the proxy login, password, `MOBILEPROXY_API_TOKEN`, `HIB_PROXY_URL` or the contents of `.env`. Do not open `.env` to show it. The scripts never print these; keep it that way.
 - Never print, send or open the files inside a profile folder (cookies, fingerprint, proxy cache).
 - If the person pastes a token into the chat, tell them to put it into `.env` themselves and to replace the token in the provider's cabinet, since the chat is not a safe place for it.
-- Never log into any account, fill in forms, buy, order, write messages or click "confirm" on a site without the person's explicit instruction for that exact action.
+- Never log into any account, fill in forms, write messages or click "confirm" on a site without the person's explicit instruction for that exact action (orders and payments: see Allowed use).
 - Use only the person's own accounts, and only when they ask.

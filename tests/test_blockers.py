@@ -114,7 +114,7 @@ def test_https_proxy_url_is_rejected_not_downgraded() -> None:
 # ---------------------------------------------------------------- H4
 
 
-def test_exit_ip_check_fails_closed_when_no_proxy_bypasses_the_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exit_ip_check_fails_closed_when_no_proxy_skips_the_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NO_PROXY", "ipinfo.io")
     monkeypatch.setenv("no_proxy", "ipinfo.io")
     opened: list[object] = []

@@ -1,6 +1,6 @@
 """Recognise anti-bot challenge pages by generic, site-independent signs.
 
-The check never tries to solve or bypass anything: it only tells the caller
+The check never tries to solve a challenge or get past it: it only tells the caller
 to stop and hand the page to a person.
 """
 
