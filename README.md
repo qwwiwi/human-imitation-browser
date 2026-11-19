@@ -1,5 +1,7 @@
 # human-imitation-browser
 
+![Human Imitation Browser: агент работает с вашими российскими сервисами](assets/banner.png)
+
 Настоящий браузер для вашего ИИ-агента, который открывает российские сайты – Ozon, Avito, Циан, Aviasales и похожие – с вашего сервера.
 
 Проект от канала «Записки AI-энтузиаста» (https://t.me/dashi_agent).
