@@ -54,7 +54,7 @@
 
 ```bash
 apt-get update && apt-get install -y git
-git clone <<PLACEHOLDER: адрес этого репозитория на GitHub>> human-imitation-browser
+git clone https://github.com/qwwiwi/human-imitation-browser.git human-imitation-browser
 cd human-imitation-browser
 ```
 
