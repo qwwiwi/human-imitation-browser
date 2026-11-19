@@ -274,11 +274,11 @@ def test_the_default_profile_and_the_check_url_override(
     assert ProfileStore(isolated_profile_store).names() == ["default"]
 
 
-def test_the_flags_page_defaults_to_the_https_one_and_can_be_overridden_by_env(
+def test_the_flags_address_defaults_to_the_ip_api_one_and_can_be_overridden_by_env(
     observer: FakeObserver, monkeypatch: pytest.MonkeyPatch, isolated_profile_store: Path, tmp_path: Path
 ) -> None:
     assert _run(tmp_path) == 0
-    assert observer.calls[0]["reputation_url"] == "https://api.ipapi.is/"
+    assert observer.calls[0]["reputation_url"] == "http://ip-api.com/json/?fields=status,country,city,isp,as,mobile,proxy,hosting"
     monkeypatch.setenv("HIB_REPUTATION_URL", "https://flags.example.test/json")
     assert _run(tmp_path, "--profile", "other") == 0
     assert observer.calls[1]["reputation_url"] == "https://flags.example.test/json"

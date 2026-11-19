@@ -7,7 +7,8 @@ visit would use (nothing is opened on a real site), and prints one JSON line:
      "mobile", "address_changed", ["address_change": {"old", "new"}], "profile_memory", "cookies_stored",
      "screenshot", "problems", "problems_soft"}
 "hosting", "proxy_flag" and "mobile" are a third-party opinion (true, false or null when unknown); they are
-read from an https page (default https://api.ipapi.is/, set HIB_REPUTATION_URL to use another one).
+read with a request from the browser context, so through the proxy (default http://ip-api.com/json/?fields=status,country,city,isp,as,mobile,proxy,hosting
+in the ip-api.com format; set HIB_REPUTATION_URL to use another one).
 An address page that times out is tried once more after a short pause.
 "mobile" true means the address of a mobile operator; it never fails the check.
 "profile_memory" is "new", "ok" or "empty". The line never carries an IP address, a cookie name or

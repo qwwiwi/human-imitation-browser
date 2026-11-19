@@ -21,11 +21,12 @@ logger = logging.getLogger(__name__)
 
 MOBILEPROXY_API = "https://mobileproxy.space/api.html"
 API_TIMEOUT_S = 20
-# Two public reputation services; neither request carries a login or token.
-# check_proxy.py goes through the proxy with plain urllib: ip-api.com (free tier is plain http only) works there,
-# but a real browser may refuse or redirect plain http, so the browser pre-flight reads an https page instead.
+# One public reputation service (ip-api.com, free tier is plain http only); neither request carries a login or token.
+# check_proxy.py goes through the proxy with plain urllib. The browser pre-flight cannot navigate to a plain-http page
+# (the real browser refuses), so it asks the same service with a request from the browser context, which uses
+# the context's proxy.
 PROXY_REPUTATION_URL = "http://ip-api.com/json/?fields=status,hosting,proxy,mobile"
-BROWSER_REPUTATION_URL = "https://api.ipapi.is/"
+BROWSER_REPUTATION_URL = "http://ip-api.com/json/?fields=status,country,city,isp,as,mobile,proxy,hosting"
 REQUIRED_FIELDS = ("proxy_hostname", "proxy_http_port", "proxy_login", "proxy_pass")
 
 ACCEPTED_FORMS = "http://host:port, http://login:password@host:port, socks5://host:port"
@@ -448,54 +449,6 @@ def parse_reputation(data: object) -> dict[str, bool | None]:
     if hosting is None or flagged is None:
         return {**unknown, "mobile": _bool_or_none(data.get("mobile"))}
     return {"hosting": hosting, "proxy": flagged, "mobile": _bool_or_none(data.get("mobile"))}
-
-
-def parse_ipapi_is(data: object) -> dict[str, bool | None]:
-    """Read the flags from an api.ipapi.is answer (the page the browser pre-flight opens).
-
-    Mapping: `hosting` = `is_datacenter`; `proxy` = `is_proxy` or `is_vpn` or `is_tor`; `mobile` = `is_mobile`.
-    Each flag stands on its own. `proxy` is True when any of its three fields is true, False when all three
-    are false, and unknown when a field is missing or not a boolean and none of the others is true.
-
-    Args:
-        data: Decoded JSON of the page, or None when there was no usable answer.
-
-    Returns:
-        Mapping with the keys `hosting`, `proxy` and `mobile`: True, False or None (unknown).
-    """
-    if not isinstance(data, dict):
-        return {"hosting": None, "proxy": None, "mobile": None}
-    parts = [_bool_or_none(data.get(key)) for key in ("is_proxy", "is_vpn", "is_tor")]
-    if any(part is True for part in parts):
-        flagged: bool | None = True
-    elif all(part is False for part in parts):
-        flagged = False
-    else:
-        flagged = None
-    return {"hosting": _bool_or_none(data.get("is_datacenter")), "proxy": flagged, "mobile": _bool_or_none(data.get("is_mobile"))}
-
-
-def extract_json(text: str) -> dict[str, object] | None:
-    """Read a JSON object out of a page body, also when the browser wrapped it in HTML.
-
-    Args:
-        text: The response body (a viewer or a proxy may have put HTML around the JSON).
-
-    Returns:
-        The JSON object, or None when the text holds none (empty, a plain page, broken JSON, a list).
-    """
-    candidates = [text]
-    start, end = text.find("{"), text.rfind("}")
-    if 0 <= start < end:
-        candidates.append(text[start : end + 1])
-    for candidate in candidates:
-        try:
-            data = json.loads(candidate)
-        except ValueError:
-            continue
-        if isinstance(data, dict):
-            return data
-    return None
 
 
 def check_reputation(proxy: ProxyConfig, url: str = PROXY_REPUTATION_URL) -> dict[str, bool | None]:

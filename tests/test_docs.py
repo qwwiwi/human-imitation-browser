@@ -181,28 +181,42 @@ def test_the_address_page_has_two_parts_and_the_measured_facts_exactly() -> None
 def test_the_address_page_names_exactly_three_third_party_pages_to_open_by_hand() -> None:
     by_hand = _section(PAGE, "Посмотреть глазами")
     hosts = {match.split("/")[0] for match in re.findall(r"https?://([^\s)]+)", by_hand)}
-    assert hosts == {"ipinfo.io", "api.ipapi.is", "browserleaks.com"}
-    assert "https://browserleaks.com/ip" in by_hand and "https://api.ipapi.is" in by_hand
+    assert hosts == {"ipinfo.io", "ip-api.com", "browserleaks.com"}
+    assert "https://ipinfo.io" in by_hand and "http://ip-api.com/json" in by_hand and "https://browserleaks.com/ip" in by_hand
     assert "могут ошибаться" in by_hand and "противоречить" in by_hand
-    assert "не зависит" in by_hand  # the tool does not depend on the last one
-    flags_line = next(line for line in by_hand.splitlines() if "api.ipapi.is" in line and line.startswith("- "))
-    assert "читает `preflight.py`" in flags_line and "mobile" in flags_line  # the page the tool reads, with the three flags
+    assert "ipapi.is" not in PAGE and "ipapi.is" not in GUIDE and "ipapi.is" not in README and "ipapi.is" not in SKILL
+    flags_line = next(line for line in by_hand.splitlines() if "ip-api.com" in line and line.startswith("- "))
+    assert "читает" in flags_line and "hosting" in flags_line and "proxy" in flags_line and "mobile" in flags_line
+    assert "http://ip-api.com/json" in flags_line and "https" in flags_line and "откажутся" in flags_line
+    owner_line = next(line for line in by_hand.splitlines() if "ipinfo.io" in line and line.startswith("- "))
+    assert "владельц" in owner_line
 
 
-def test_the_address_page_names_ip_api_only_as_the_plain_http_lookup_of_check_proxy() -> None:
-    assert "ip-api.com" not in _section(PAGE, "Посмотреть глазами")
-    mentions = [line for line in PAGE.splitlines() if "ip-api.com" in line]
-    assert mentions and all("check_proxy.py" in line and "http" in line for line in mentions)
-    assert "браузер" in " ".join(mentions)  # a browser may refuse plain http
-
-
-def test_the_address_page_documents_the_flags_page_override_and_its_fields() -> None:
+def test_the_address_page_says_how_the_tool_reads_the_flags_and_what_the_service_terms_are() -> None:
     step = _section(PAGE, "Проверка одной командой")
-    assert "HIB_REPUTATION_URL" in step and "https://api.ipapi.is/" in step
-    for name in ("is_datacenter", "is_proxy", "is_vpn", "is_tor", "is_mobile"):
+    assert "запрос" in step and "из того же браузера" in step  # a request from the browser context, through the same proxy
+    assert "не открывает" in step or "не переходит" in step  # not a page navigation
+    assert "45" in PAGE and "некоммерческ" in PAGE and "по словам сервиса" in PAGE and "проверьте их условия" in PAGE
+
+
+def test_the_address_page_documents_the_flags_address_override_and_its_fields() -> None:
+    step = _section(PAGE, "Проверка одной командой")
+    assert "HIB_REPUTATION_URL" in step and "http://ip-api.com/json/?fields=status,country,city,isp,as,mobile,proxy,hosting" in step
+    for name in ("status", "hosting", "proxy", "mobile"):
         assert f"`{name}`" in step, name
-    assert "HIB_REPUTATION_URL" in GUIDE and "is_datacenter" in GUIDE
+    for name in ("is_datacenter", "is_proxy", "is_vpn", "is_tor", "is_mobile"):
+        assert name not in step and name not in GUIDE and name not in README, name
+    assert "HIB_REPUTATION_URL" in GUIDE and "`hosting`" in GUIDE and "`status`" in GUIDE
     assert "один раз" in step and "повтор" in step  # a slow address page is tried once more
+
+
+def test_the_sample_outputs_carry_filled_flags() -> None:
+    for text in (PAGE, README, GUIDE):
+        sample = re.search(r'\{"ok": true, "profile": "my-shop".+\}', text)
+        assert sample, text[:40]
+        assert '"hosting": false' in sample.group(0) or '"hosting": true' in sample.group(0)
+        assert '"proxy_flag": ' in sample.group(0) and '"mobile": ' in sample.group(0)
+        assert "null" not in sample.group(0)
 
 
 def test_the_reading_table_has_a_mobile_network_row() -> None:

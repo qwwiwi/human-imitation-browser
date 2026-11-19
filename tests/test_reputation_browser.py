@@ -1,6 +1,7 @@
-"""The browser pre-flight reads the reputation flags from an https page and retries a slow address page once.
+"""The browser pre-flight reads the reputation flags with a request from the browser context and retries a slow address page once.
 
-No browser and no network: a fake tab answers `goto` from a script; the pause is a fake clock. All values are synthetic.
+No browser and no network: a fake tab answers `goto` and `context.request.get` from scripts; the pause is a fake clock.
+All values are synthetic.
 """
 
 import json
@@ -15,70 +16,39 @@ from hib import browser
 from hib import preflight as core
 from hib.browser import OpenOptions, PlaywrightError, PlaywrightTimeoutError
 from hib.errors import PageTimeoutError, ProxyUnreachableError
-from hib.proxy import BROWSER_REPUTATION_URL, ProxyConfig, extract_json, parse_ipapi_is
+from hib.proxy import BROWSER_REPUTATION_URL, ProxyConfig
 
 CHECK_URL = "https://check.example.test/json"
-REPUTATION_URL = "https://reputation.example.test/"
+REPUTATION_URL = "http://reputation.example.test/json"
 INFO = {"country": "RU", "city": "Test City", "org": "AS64500 Test Home Net"}
-CLEAN = {"ip": "x", "is_datacenter": False, "is_proxy": False, "is_vpn": False, "is_tor": False, "is_mobile": False}
-FLAT_REPUTATION = {"hosting": None, "proxy": None, "mobile": None}
+CLEAN = {"status": "success", "country": "Test", "city": "Test City", "isp": "Test Net", "as": "AS64500 Test Net", "mobile": False, "proxy": False, "hosting": False}
 
 
-# ------------------------------------------------------------ parsing the https answer
+# ------------------------------------------------------------ the default address and the context request
 
 
-def test_the_default_browser_page_is_https_and_is_ipapi_is() -> None:
-    assert BROWSER_REPUTATION_URL == "https://api.ipapi.is/"
+def test_the_default_flags_address_is_the_ip_api_json_with_the_fields_the_tool_reads() -> None:
+    assert BROWSER_REPUTATION_URL.startswith("http://ip-api.com/json/")
+    fields = BROWSER_REPUTATION_URL.split("fields=")[1].split(",")
+    assert {"status", "hosting", "proxy", "mobile"} <= set(fields)
 
 
-@pytest.mark.parametrize(
-    ("changes", "expected"),
-    [
-        ({}, {"hosting": False, "proxy": False, "mobile": False}),
-        ({"is_datacenter": True}, {"hosting": True, "proxy": False, "mobile": False}),
-        ({"is_proxy": True}, {"hosting": False, "proxy": True, "mobile": False}),
-        ({"is_vpn": True}, {"hosting": False, "proxy": True, "mobile": False}),
-        ({"is_tor": True}, {"hosting": False, "proxy": True, "mobile": False}),
-        ({"is_mobile": True}, {"hosting": False, "proxy": False, "mobile": True}),
-    ],
-)
-def test_ipapi_is_flags_map_to_hosting_proxy_and_mobile(changes: dict[str, bool], expected: dict[str, bool]) -> None:
-    assert parse_ipapi_is({**CLEAN, **changes}) == expected
+def test_the_ipapi_is_mapping_is_gone() -> None:
+    import hib.proxy as proxy_module
+
+    assert not hasattr(proxy_module, "parse_ipapi_is") and not hasattr(proxy_module, "extract_json")
+    assert not hasattr(browser, "fetch_page_body")
 
 
-def test_a_missing_field_is_unknown_for_that_flag_only() -> None:
-    answer = {key: value for key, value in CLEAN.items() if key != "is_mobile"}
-    assert parse_ipapi_is(answer) == {"hosting": False, "proxy": False, "mobile": None}
+class FakeApiResponse:
+    """What `context.request.get` returns: a status and a body that `json()` decodes like Playwright does."""
 
+    def __init__(self, status: int, body: str) -> None:
+        self.status = status
+        self._body = body
 
-def test_a_positive_proxy_field_wins_over_a_missing_sibling() -> None:
-    assert parse_ipapi_is({"is_proxy": True, "is_datacenter": False})["proxy"] is True
-
-
-def test_a_proxy_flag_with_a_missing_sibling_and_no_positive_is_unknown() -> None:
-    assert parse_ipapi_is({"is_proxy": False, "is_vpn": False})["proxy"] is None  # is_tor missing
-
-
-@pytest.mark.parametrize("answer", [None, [], "text", 7, {}, {"is_datacenter": "yes", "is_proxy": 1, "is_mobile": "no"}])
-def test_an_unusable_answer_is_unknown_never_a_crash(answer: object) -> None:
-    assert parse_ipapi_is(answer) == FLAT_REPUTATION
-
-
-def test_extract_json_reads_plain_json() -> None:
-    assert extract_json(json.dumps(CLEAN)) == CLEAN
-
-
-def test_extract_json_reads_json_inside_an_html_wrapper() -> None:
-    wrapped = f"<html><head></head><body><pre>{json.dumps(CLEAN, indent=2)}</pre></body></html>"
-    assert extract_json(wrapped) == CLEAN
-
-
-@pytest.mark.parametrize("text", ["", "not json at all", "<html><body>Just a moment...</body></html>", "{broken", "x" * 260, "[1, 2]", "}{"])
-def test_extract_json_gives_none_for_what_is_not_a_json_object(text: str) -> None:
-    assert extract_json(text) is None
-
-
-# ------------------------------------------------------------ the page body, not the rendered page
+    def json(self) -> object:
+        return json.loads(self._body)
 
 
 class FakeResponse:
@@ -91,12 +61,18 @@ class FakeResponse:
 
 
 class FakeTab:
-    """A tab whose `goto` follows a script: url -> list of outcomes (an exception, or (status, body))."""
+    """A tab whose `goto` follows a script (url -> outcomes) and whose context has a scripted `request.get`."""
 
-    def __init__(self, script: dict[str, list[Exception | tuple[int, str]]]) -> None:
+    def __init__(
+        self,
+        script: dict[str, list[Exception | tuple[int, str]]],
+        api: dict[str, list[Exception | tuple[int, str]]] | None = None,
+    ) -> None:
         self.script = {url: list(outcomes) for url, outcomes in script.items()}
+        self.api = {url: list(outcomes) for url, outcomes in (api or {}).items()}
         self.visited: list[str] = []
-        self.context = SimpleNamespace(cookies=lambda: [])
+        self.requested: list[tuple[str, float]] = []
+        self.context = SimpleNamespace(cookies=lambda: [], request=SimpleNamespace(get=self._api_get))
 
     def goto(self, url: str, wait_until: str = "load", timeout: float = 0) -> FakeResponse:
         self.visited.append(url)
@@ -104,6 +80,13 @@ class FakeTab:
         if isinstance(outcome, Exception):
             raise outcome
         return FakeResponse(*outcome)
+
+    def _api_get(self, url: str, timeout: float = 0) -> FakeApiResponse:
+        self.requested.append((url, timeout))
+        outcome = self.api[url].pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return FakeApiResponse(*outcome)
 
     def screenshot(self, path: str) -> None:
         Path(path).write_bytes(b"png")
@@ -141,23 +124,51 @@ def _observe(tmp_path: Path, tab: FakeTab, holder: dict[str, FakeTab], clock: Fa
     )
 
 
-def test_flags_come_from_the_body_of_the_https_page_even_in_an_html_wrapper(tmp_path: Path, tab_and_launch: dict[str, FakeTab]) -> None:
-    body = f"<html><body><pre>{json.dumps({**CLEAN, 'is_datacenter': True, 'is_mobile': True})}</pre></body></html>"
-    tab = FakeTab({CHECK_URL: [(200, json.dumps(INFO))], REPUTATION_URL: [(200, body)]})
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({}, (False, False, False)),
+        ({"hosting": True, "proxy": True}, (True, True, False)),
+        ({"hosting": True}, (True, False, False)),
+        ({"proxy": True}, (False, True, False)),
+        ({"mobile": True}, (False, False, True)),
+    ],
+)
+def test_flags_come_from_a_request_of_the_browser_context_not_from_a_navigation(
+    tmp_path: Path, tab_and_launch: dict[str, FakeTab], changes: dict[str, bool], expected: tuple[bool, bool, bool]
+) -> None:
+    tab = FakeTab({CHECK_URL: [(200, json.dumps(INFO))]}, {REPUTATION_URL: [(200, json.dumps({**CLEAN, **changes}))]})
     seen = _observe(tmp_path, tab, tab_and_launch, FakeClock())
-    assert (seen.hosting, seen.proxy_flag, seen.mobile) == (True, False, True)
+    assert (seen.hosting, seen.proxy_flag, seen.mobile) == expected
     assert seen.owner == "AS64500 Test Home Net" and seen.country == "RU"
-    assert tab.visited == [CHECK_URL, REPUTATION_URL]
+    assert tab.visited == [CHECK_URL]  # the flags address is never navigated to
+    assert [url for url, _ in tab.requested] == [REPUTATION_URL]  # one request, from the same context as the address page
+
+
+def test_the_context_request_gets_the_load_timeout_in_milliseconds(tmp_path: Path, tab_and_launch: dict[str, FakeTab]) -> None:
+    tab = FakeTab({CHECK_URL: [(200, json.dumps(INFO))]}, {REPUTATION_URL: [(200, json.dumps(CLEAN))]})
+    _observe(tmp_path, tab, tab_and_launch, FakeClock())
+    assert tab.requested == [(REPUTATION_URL, 5000)]
 
 
 @pytest.mark.parametrize(
     "outcome",
-    [(200, "x" * 260), (200, ""), (500, "oops"), PlaywrightTimeoutError("Timeout 5000ms exceeded"), PlaywrightError("boom")],
+    [
+        (200, "<html>not json</html>"),
+        (200, ""),
+        (200, json.dumps({"status": "fail", "message": "reserved range"})),
+        (200, json.dumps({"status": "success", "hosting": "yes", "proxy": 1, "mobile": "no"})),
+        (200, json.dumps([1, 2])),
+        (429, json.dumps(CLEAN)),
+        (500, "oops"),
+        PlaywrightTimeoutError("Timeout 5000ms exceeded"),
+        PlaywrightError("boom"),
+    ],
 )
-def test_a_flags_page_that_fails_leaves_the_flags_unknown_and_the_result_ok(
+def test_a_flags_request_that_fails_leaves_the_flags_unknown_and_the_result_ok(
     tmp_path: Path, tab_and_launch: dict[str, FakeTab], outcome: Exception | tuple[int, str]
 ) -> None:
-    tab = FakeTab({CHECK_URL: [(200, json.dumps(INFO))], REPUTATION_URL: [outcome]})
+    tab = FakeTab({CHECK_URL: [(200, json.dumps(INFO))]}, {REPUTATION_URL: [outcome]})
     seen = _observe(tmp_path, tab, tab_and_launch, FakeClock())
     assert (seen.hosting, seen.proxy_flag, seen.mobile) == (None, None, None)
     assert seen.country == "RU" and seen.owner == "AS64500 Test Home Net"
@@ -165,20 +176,27 @@ def test_a_flags_page_that_fails_leaves_the_flags_unknown_and_the_result_ok(
     assert verdict.ok is True and any("reputation unknown" in note for note in verdict.problems_soft)
 
 
+def test_a_context_without_a_request_api_gives_unknown_flags_and_never_a_direct_request(
+    tmp_path: Path, tab_and_launch: dict[str, FakeTab]
+) -> None:
+    tab = FakeTab({CHECK_URL: [(200, json.dumps(INFO))]})
+    tab.context = SimpleNamespace(cookies=lambda: [])  # no `request`: the flags must stay unknown, never come from this machine
+    seen = _observe(tmp_path, tab, tab_and_launch, FakeClock())
+    assert (seen.hosting, seen.proxy_flag, seen.mobile) == (None, None, None)
+
+
 # ------------------------------------------------------------ one retry of the address page
 
 
 def test_a_load_timeout_of_the_address_page_is_retried_once_after_a_short_pause(tmp_path: Path, tab_and_launch: dict[str, FakeTab]) -> None:
     tab = FakeTab(
-        {
-            CHECK_URL: [PlaywrightTimeoutError("Timeout 5000ms exceeded"), (200, json.dumps(INFO))],
-            REPUTATION_URL: [(200, json.dumps(CLEAN))],
-        }
+        {CHECK_URL: [PlaywrightTimeoutError("Timeout 5000ms exceeded"), (200, json.dumps(INFO))]},
+        {REPUTATION_URL: [(200, json.dumps(CLEAN))]},
     )
     clock = FakeClock()
     seen = _observe(tmp_path, tab, tab_and_launch, clock)
     assert seen.country == "RU" and seen.hosting is False
-    assert tab.visited == [CHECK_URL, CHECK_URL, REPUTATION_URL]
+    assert tab.visited == [CHECK_URL, CHECK_URL]
     assert clock.pauses == [core.RETRY_PAUSE_S] and 0 < core.RETRY_PAUSE_S <= 30
 
 
@@ -199,9 +217,9 @@ def test_a_proxy_failure_is_not_retried(tmp_path: Path, tab_and_launch: dict[str
     assert tab.visited == [CHECK_URL] and clock.pauses == []
 
 
-def test_the_default_flags_page_of_the_browser_check_is_the_https_one(tmp_path: Path, tab_and_launch: dict[str, FakeTab]) -> None:
-    tab = FakeTab({CHECK_URL: [(200, json.dumps(INFO))], BROWSER_REPUTATION_URL: [(200, json.dumps(CLEAN))]})
+def test_the_default_flags_address_of_the_browser_check_is_the_ip_api_one(tmp_path: Path, tab_and_launch: dict[str, FakeTab]) -> None:
+    tab = FakeTab({CHECK_URL: [(200, json.dumps(INFO))]}, {BROWSER_REPUTATION_URL: [(200, json.dumps(CLEAN))]})
     tab_and_launch["tab"] = tab
     profile = SimpleNamespace(user_data_dir=tmp_path / "data")
     seen = core.observe_in_browser(ProxyConfig("127.0.0.1", 1), profile, OpenOptions(out_dir=tmp_path / "out"), CHECK_URL, sleep=FakeClock())  # type: ignore[arg-type]
-    assert tab.visited[-1] == "https://api.ipapi.is/" and seen.hosting is False
+    assert tab.requested[-1][0] == BROWSER_REPUTATION_URL and seen.hosting is False

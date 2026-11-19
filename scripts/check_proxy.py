@@ -4,8 +4,7 @@
 Prints one JSON line: {"source", "country", "city", "org", "network_owner", "ru", "traffic_left_mb",
 "hosting", "proxy_flag", "mobile"}.
 "network_owner" is the network owner (the same text as "org"). "hosting", "proxy_flag" and "mobile" come from one
-extra request to a public reputation service (ip-api.com, plain http, which works through an http proxy here but
-which a browser may refuse): true, false or null when it could not be read. They are a third
+extra request to a public reputation service (ip-api.com, plain http, sent through the proxy with urllib): true, false or null when it could not be read. They are a third
 party's opinion and can be wrong. A line "reputation: ..." also goes to the log (stderr).
 "ru" is true when the exit address is in Russia; the exit code stays 0 either way,
 because the proxy itself works.

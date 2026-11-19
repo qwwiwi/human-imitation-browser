@@ -143,7 +143,7 @@ HIB_PROXY_ID=номер_прокси
 HIB_PROFILES_DIR=/путь/к/профилям
 HIB_MIN_GAP_S=20
 HIB_CHECK_URL=https://адрес-страницы-проверки
-HIB_REPUTATION_URL=https://адрес-страницы-с-пометками
+HIB_REPUTATION_URL=http://адрес-службы-с-пометками
 HIB_PREFLIGHT_MAX_AGE_H=12
 ```
 
@@ -152,7 +152,7 @@ HIB_PREFLIGHT_MAX_AGE_H=12
 - `HIB_PROFILES_DIR` – где хранить профили (по умолчанию `~/.local/share/hib/profiles`). Внутри папки проекта хранить профили нельзя: скрипт откажется.
 - `HIB_MIN_GAP_S` – минимум секунд между двумя заходами на один сайт (по умолчанию 20, меньше 5 нельзя).
 - `HIB_CHECK_URL` – другая страница для проверки перед заходом (шаг 4.2). Она должна отвечать в формате JSON с полями `country`, `city` и `org`. По умолчанию – ipinfo.io.
-- `HIB_REPUTATION_URL` – другая страница с пометками «hosting», «proxy» и «mobile» для той же проверки. Адрес должен начинаться с `https://`: браузер может не открыть обычный `http://`. Страница должна отвечать в формате JSON с полями `is_datacenter`, `is_proxy`, `is_vpn`, `is_tor`, `is_mobile` (значения `true` или `false`), как отвечает api.ipapi.is. По умолчанию – https://api.ipapi.is/.
+- `HIB_REPUTATION_URL` – другая служба с пометками «hosting», «proxy» и «mobile» для той же проверки. Проверка спрашивает её запросом из браузера, через тот же прокси. Служба должна отвечать в формате JSON с полем `status` (значение `success`) и булевыми полями `hosting`, `proxy`, `mobile` (значения `true` или `false`), как отвечает ip-api.com. По умолчанию – `http://ip-api.com/json/?fields=status,country,city,isp,as,mobile,proxy,hosting`.
 - `HIB_PREFLIGHT_MAX_AGE_H` – сколько часов действует пройденная проверка перед заходом (по умолчанию 12).
 
 ---

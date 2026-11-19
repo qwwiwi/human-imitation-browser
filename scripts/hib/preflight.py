@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from hib.errors import ConfigError, HibError, PageTimeoutError
 from hib.profiles import Profile, clean_place
-from hib.proxy import BROWSER_REPUTATION_URL, ProxyConfig, extract_json, parse_ipapi_is, redact
+from hib.proxy import BROWSER_REPUTATION_URL, ProxyConfig, redact
 
 if TYPE_CHECKING:
     from hib.browser import OpenOptions
@@ -283,7 +283,7 @@ def check_url_or_default(value: str | None) -> str:
 
 
 def reputation_url_or_default(value: str | None) -> str:
-    """Return the page that gives the hosting, proxy and mobile flags: HIB_REPUTATION_URL if set, otherwise the default.
+    """Return the address that gives the hosting, proxy and mobile flags: HIB_REPUTATION_URL if set, otherwise the default.
 
     Raises:
         ConfigError: The override is not an http:// or https:// address.
@@ -292,8 +292,8 @@ def reputation_url_or_default(value: str | None) -> str:
         return BROWSER_REPUTATION_URL
     if not re.fullmatch(r"https?://[^\s/]+\S*", value):
         raise ConfigError(
-            "HIB_REPUTATION_URL must be an http:// or https:// address of a page that answers with JSON "
-            "having is_datacenter, is_proxy, is_vpn, is_tor and is_mobile (the api.ipapi.is format)"
+            "HIB_REPUTATION_URL must be an http:// or https:// address of a service that answers with JSON "
+            "having status (success), hosting, proxy and mobile (the ip-api.com format)"
         )
     return value
 
@@ -334,17 +334,17 @@ def observe_in_browser(
 ) -> Seen:
     """Open the address-check pages in the profile's browser through the proxy and describe what they show.
 
-    The check page gives country, city and owner (one retry after a load timeout); a second neutral https
-    page gives the hosting, proxy and mobile flags (unknown if it fails or answers something unusable).
-    No human-like pauses, no pacing: neither page is a real site.
+    The check page gives country, city and owner (one retry after a load timeout); a request from the same
+    browser context (so through the same proxy, not a page navigation) gives the hosting, proxy and mobile
+    flags (unknown if it fails or answers something unusable). No human-like pauses, no pacing: neither is a real site.
 
     Args:
         proxy: The proxy the real visit would use.
         profile: The profile whose browser memory is used.
         options: Opening options (screenshot folder, timeout).
         check_url: Page that answers with JSON having `country`, `city` and `org`.
-        reputation_url: Page that answers with JSON having `is_datacenter`, `is_proxy`, `is_vpn`, `is_tor`
-            and `is_mobile` (the api.ipapi.is format). The JSON may sit inside an HTML wrapper.
+        reputation_url: Address of a service that answers with JSON having `status` (`success`) and the boolean
+            `hosting`, `proxy` and `mobile` (the ip-api.com format); it is asked with a request of the browser context.
         sleep: The pause function (tests pass a fake clock).
 
     Returns:
@@ -378,12 +378,7 @@ def observe_in_browser(
         except browser.PlaywrightError as exc:
             logger.warning("screenshot failed: %s", redact(str(exc).splitlines()[0] if str(exc) else "", secrets))
             screenshot = ""
-        try:
-            # The body, not the rendered page: the browser's JSON viewer or a wrapper must not hide the JSON.
-            flags = parse_ipapi_is(extract_json(browser.fetch_page_body(page, reputation_url, options.timeout_s, secrets) or ""))
-        except HibError as exc:
-            logger.info("reputation lookup failed: %s", redact(str(exc), secrets))
-            flags = parse_ipapi_is(None)
+        flags = browser.fetch_reputation(page, reputation_url, options.timeout_s, secrets)
         at_end = browser.stored_cookie_count(page)
     return Seen(
         country=str(info.get("country") or ""),

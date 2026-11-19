@@ -24,7 +24,7 @@ from hib.challenge import MIN_TEXT_CHARS, detect_challenge
 from hib.errors import BrowserStartError, HibError, PageServerError, PageTimeoutError, ProxyUnreachableError
 from hib.pace import Pacer
 from hib.profiles import Profile
-from hib.proxy import ProxyConfig, redact
+from hib.proxy import ProxyConfig, parse_reputation, redact
 
 logger = logging.getLogger(__name__)
 
@@ -331,45 +331,11 @@ def _observed_timezone(page: Page) -> str:
         return ""
 
 
-def fetch_page_body(page: Page, url: str, timeout_s: float, secrets: list[str]) -> str:
-    """Open a neutral address in the tab and return the response body as text (not the rendered page).
+def fetch_json_page(page: Page, url: str, timeout_s: float, secrets: list[str]) -> object:
+    """Open a neutral JSON address in the tab and return the decoded JSON.
 
     No human-like actions and no challenge detection: this is for the address-check pages
     of the pre-flight, never for a real site.
-
-    Args:
-        page: Browser tab to use.
-        url: Address of a neutral page.
-        timeout_s: Load timeout in seconds.
-        secrets: Values to strip from any error text.
-
-    Returns:
-        The body of the HTTP 200 answer.
-
-    Raises:
-        PageTimeoutError: The page did not load in time.
-        ProxyUnreachableError: Firefox reported a proxy failure.
-        HibError: Another navigation error, an answer other than HTTP 200, or a body that cannot be read.
-    """
-    try:
-        response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_s * 1000)
-    except PlaywrightTimeoutError:
-        raise PageTimeoutError(f"the address-check page did not load in {timeout_s:.0f} s") from None
-    except PlaywrightError as exc:
-        message = redact(str(exc).splitlines()[0] if str(exc) else type(exc).__name__, secrets)
-        if any(marker in message for marker in PROXY_ERROR_MARKERS):
-            raise ProxyUnreachableError(f"the proxy failed: {message}") from None
-        raise HibError(f"cannot open the address-check page: {message}") from None
-    if response is None or response.status != 200:
-        raise HibError(f"the address-check page answered HTTP {response.status if response else 'nothing'}")
-    try:
-        return response.text()
-    except PlaywrightError:
-        raise HibError("the address-check page body could not be read") from None
-
-
-def fetch_json_page(page: Page, url: str, timeout_s: float, secrets: list[str]) -> object:
-    """Open a neutral JSON address in the tab and return the decoded JSON.
 
     Args:
         page: Browser tab to use.
@@ -385,11 +351,48 @@ def fetch_json_page(page: Page, url: str, timeout_s: float, secrets: list[str]) 
         ProxyUnreachableError: Firefox reported a proxy failure.
         HibError: Another navigation error, an answer other than HTTP 200, or a body that is not JSON.
     """
-    body = fetch_page_body(page, url, timeout_s, secrets)
     try:
-        return json.loads(body)
-    except ValueError:
+        response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_s * 1000)
+    except PlaywrightTimeoutError:
+        raise PageTimeoutError(f"the address-check page did not load in {timeout_s:.0f} s") from None
+    except PlaywrightError as exc:
+        message = redact(str(exc).splitlines()[0] if str(exc) else type(exc).__name__, secrets)
+        if any(marker in message for marker in PROXY_ERROR_MARKERS):
+            raise ProxyUnreachableError(f"the proxy failed: {message}") from None
+        raise HibError(f"cannot open the address-check page: {message}") from None
+    if response is None or response.status != 200:
+        raise HibError(f"the address-check page answered HTTP {response.status if response else 'nothing'}")
+    try:
+        return json.loads(response.text())
+    except (PlaywrightError, ValueError):
         raise HibError("the address-check page did not return JSON") from None
+
+
+def fetch_reputation(page: Page, url: str, timeout_s: float, secrets: list[str]) -> dict[str, bool | None]:
+    """Ask the reputation service from the browser context and return the `hosting`, `proxy` and `mobile` flags.
+
+    This is a request made by the context of the tab, not a page navigation: the plain-http answer is not
+    shown as a page, and the request goes through the proxy of this very context. Nothing is ever sent from
+    this machine directly. Any failure (no request API, timeout, HTTP status other than 200, an answer that
+    is not JSON, a status other than `success`) is not an error: the flags are then None (unknown).
+
+    Args:
+        page: Browser tab whose context (and so whose proxy) is used.
+        url: Address of a JSON service with `status`, `hosting`, `proxy` and `mobile` fields (ip-api.com format).
+        timeout_s: Request timeout in seconds.
+        secrets: Values to strip from any log text.
+
+    Returns:
+        Mapping with the keys `hosting`, `proxy` and `mobile`: True, False or None (unknown).
+    """
+    try:
+        response = page.context.request.get(url, timeout=timeout_s * 1000)
+        if response.status != 200:
+            raise HibError(f"the reputation service answered HTTP {response.status}")
+        return parse_reputation(response.json())
+    except (PlaywrightError, HibError, AttributeError, ValueError) as exc:
+        logger.info("reputation lookup failed: %s", redact(str(exc).splitlines()[0] if str(exc) else type(exc).__name__, secrets))
+        return parse_reputation(None)
 
 
 def stored_cookie_count(page: Page) -> int | None:
