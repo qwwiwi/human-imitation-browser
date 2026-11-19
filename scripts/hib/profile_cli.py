@@ -1,4 +1,4 @@
-"""Command line of `scripts/profile.py`: list, show and delete browser profiles."""
+"""Command line of `scripts/profiles.py`: list, show and delete browser profiles."""
 
 import argparse
 import json

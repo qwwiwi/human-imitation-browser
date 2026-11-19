@@ -2,9 +2,9 @@
 """List, show and delete browser profiles.
 
 Examples:
-    .venv/bin/python scripts/profile.py list
-    .venv/bin/python scripts/profile.py show default
-    .venv/bin/python scripts/profile.py delete my-shop
+    .venv/bin/python scripts/profiles.py list
+    .venv/bin/python scripts/profiles.py show default
+    .venv/bin/python scripts/profiles.py delete my-shop
 """
 
 import sys

@@ -237,7 +237,7 @@ class Profile:
         self.save()
 
     def describe(self) -> dict[str, object]:
-        """Return what `profile.py show` prints: no proxy session id, no fingerprint body, no secrets."""
+        """Return what `profiles.py show` prints: no proxy session id, no fingerprint body, no secrets."""
         d = self.data
         return {
             "name": d.name,
@@ -295,7 +295,7 @@ class ProfileStore:
         except (OSError, ValueError, TypeError) as exc:
             raise ProfileError(
                 f"profile {path.name} is damaged ({type(exc).__name__}); "
-                "restore it from a backup or delete it with scripts/profile.py (the site will then see a new visitor)"
+                "restore it from a backup or delete it with scripts/profiles.py (the site will then see a new visitor)"
             ) from None
         return Profile(path=path, data=data, fingerprint=fingerprint)
 

@@ -1,4 +1,4 @@
-"""open_page.py and profile.py command lines with a fake browser: default profile, ephemeral, lock, JSON."""
+"""open_page.py and profiles.py command lines with a fake browser: default profile, ephemeral, lock, JSON."""
 
 import json
 from pathlib import Path

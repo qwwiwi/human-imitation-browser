@@ -1,6 +1,7 @@
 """Open pages in Camoufox with human-like pacing and stop on challenge pages."""
 
 import logging
+import platform
 import random
 import time
 import warnings
@@ -26,8 +27,11 @@ from hib.proxy import ProxyConfig, redact
 
 logger = logging.getLogger(__name__)
 
-# The fingerprint is drawn once per profile: a desktop Windows Firefox with a common screen size.
-PROFILE_OS = "windows"
+# The fingerprint is drawn once per profile: a desktop Firefox on the host's own OS with a common
+# screen size. Camoufox 0.5.9 (utils.py plan_rendering) keeps stock canvas/WebGL readback only when
+# the identity claims the host OS; another OS gets randomised readback and a LeakWarning.
+HOST_OS_NAMES = {"Linux": "linux", "Windows": "windows", "Darwin": "macos"}
+FALLBACK_OS = "linux"
 PROFILE_SCREEN = Screen(min_width=1280, max_width=1920, min_height=720, max_height=1080)
 TIMEZONE_SCRIPT = "() => Intl.DateTimeFormat().resolvedOptions().timeZone"
 
@@ -212,13 +216,31 @@ def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> 
     )
 
 
+def host_os() -> str:
+    """Return the host operating system in Camoufox's names.
+
+    Returns:
+        "linux", "windows" or "macos"; any other system maps to "linux"
+        (Camoufox itself reads every non-Windows, non-macOS user agent as Linux).
+    """
+    system = platform.system()
+    name = HOST_OS_NAMES.get(system)
+    if name is None:
+        logger.warning("unknown host system %r: the new profile will describe itself as %s", system, FALLBACK_OS)
+        return FALLBACK_OS
+    return name
+
+
 def make_fingerprint() -> dict[str, object]:
     """Draw the browser fingerprint of a new profile (called once, at profile creation).
+
+    The fingerprint claims the same OS the server runs, so the page's canvas and
+    WebGL pixels agree with it. Existing profiles keep the fingerprint they stored.
 
     Returns:
         A JSON-ready fingerprint for Camoufox's `fingerprint=` option.
     """
-    return generate_fingerprint(os=PROFILE_OS, screen=PROFILE_SCREEN)
+    return generate_fingerprint(os=host_os(), screen=PROFILE_SCREEN)
 
 
 @contextmanager

@@ -21,7 +21,7 @@ The project lives in `~/human-imitation-browser` (if the person installed it els
 
 Why: a site remembers a returning browser (cookies, cache, history, the same fingerprint and the same proxy exit). A fresh browser on every visit is what triggered a check in our own test: the sixth visit of the day to Ozon, each with a new browser, got a slider captcha.
 
-The profile folder (`~/.local/share/hib/profiles/NAME/`) is effectively a key to the session and to any account logged in there. Never print, send, copy, commit or open its files. Delete a profile (`scripts/profile.py delete NAME`) only when the person asks.
+The profile folder (`~/.local/share/hib/profiles/NAME/`) is effectively a key to the session and to any account logged in there. Never print, send, copy, commit or open its files. Delete a profile (`scripts/profiles.py delete NAME`) only when the person asks.
 
 ## When to use
 
@@ -57,8 +57,8 @@ The browser takes about 10 seconds to start. A run with several pages takes minu
 Profile commands:
 
 ```bash
-.venv/bin/python scripts/profile.py list
-.venv/bin/python scripts/profile.py show my-shop
+.venv/bin/python scripts/profiles.py list
+.venv/bin/python scripts/profiles.py show my-shop
 ```
 
 To check the proxy without a browser: `.venv/bin/python scripts/check_proxy.py` (prints country, city, provider and `traffic_left_mb`).
