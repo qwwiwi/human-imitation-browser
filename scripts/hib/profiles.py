@@ -6,10 +6,10 @@ A profile is a folder outside the repository:
         profile.json       the choices made once (see ProfileData); no secrets
         fingerprint.json   the browser fingerprint generated once and reused
         proxy-cache.json   the proxy answer kept for a few minutes (has the proxy login)
-        lock               held by the run that uses the profile
         user-data/         the browser's own memory: cookies, cache, history
 
-The folder is the key to the session and to every account logged in there:
+The run that uses a profile holds a lock file outside this folder (`<root>/.locks/<name>.lock`),
+so deleting the folder never removes the lock. The folder is the key to the session and to every account logged in there:
 it stays private (directories 0700, files 0600) and never goes into git.
 """
 
@@ -36,7 +36,7 @@ DEFAULT_PROFILE = "default"
 DEFAULT_LOCALE = "ru-RU"
 PROFILE_FILE = "profile.json"
 FINGERPRINT_FILE = "fingerprint.json"
-LOCK_FILE = "lock"
+LOCKS_DIR = ".locks"
 USER_DATA_DIR = "user-data"
 SCHEMA_VERSION = 1
 
@@ -88,20 +88,22 @@ def _utc_now() -> str:
 def write_private(path: Path, text: str) -> None:
     """Write a file readable by the owner only, replacing it atomically.
 
+    The text goes into a new, exclusively created 0600 file next to the target (a planted
+    file or symlink under the temporary name is never opened), then replaces the target.
+
     Args:
         path: Target file.
         text: Content (UTF-8).
     """
-    tmp = path.with_name(path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
+        os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
 
 
 def _private_dir(path: Path) -> None:
@@ -265,14 +267,36 @@ class ProfileStore:
         self.root = root
 
     def _dir(self, name: str) -> Path:
-        return self.root / validate_profile_name(name)
+        """Return the folder of a profile after checking that it really is a child of the root.
+
+        Raises:
+            ProfileError: The name is bad, the folder is a symlink, or it resolves outside the root
+                or onto the project folder (or a parent of it).
+        """
+        path = self.root / validate_profile_name(name)
+        if path.is_symlink():
+            raise ProfileError(f"profile {name} is not a folder of this tool")
+        resolved = path.resolve()
+        if (
+            resolved.parent != self.root.resolve()
+            or resolved.is_relative_to(REPO_ROOT)
+            or REPO_ROOT.is_relative_to(resolved)
+        ):
+            raise ProfileError(f"profile {name} is not a folder of this tool")
+        return path
+
+    def _lock_path(self, name: str) -> Path:
+        """Where the lock of a profile lives: outside the profile folder, so deleting it keeps the lock."""
+        return self.root / LOCKS_DIR / f"{name}.lock"
 
     def names(self) -> list[str]:
         """Return the names of complete profiles, sorted."""
         if not self.root.is_dir():
             return []
         return sorted(
-            p.name for p in self.root.iterdir() if NAME_PATTERN.fullmatch(p.name) and p.is_dir() and (p / PROFILE_FILE).is_file()
+            p.name
+            for p in self.root.iterdir()
+            if NAME_PATTERN.fullmatch(p.name) and not p.is_symlink() and p.is_dir() and (p / PROFILE_FILE).is_file()
         )
 
     def load(self, name: str) -> Profile:
@@ -337,9 +361,16 @@ class ProfileStore:
             ProfileBusyError: Another run holds the profile.
             ProfileError: The profile cannot be created or is damaged.
         """
-        path = self._dir(name)
-        fd = self._lock(path, create=True)
+        self._dir(name)  # refuse a bad folder before anything is created
+        fd = self._lock(name)
         try:
+            path = self._dir(name)  # checked again under the lock
+            try:
+                _private_dir(path)
+            except OSError as exc:
+                raise ProfileError(f"cannot open profile {name}: {type(exc).__name__}") from None
+            if not path.is_dir():
+                raise ProfileError(f"profile {name} is not a folder of this tool")
             if (path / PROFILE_FILE).is_file():
                 profile = self._read(path)
             else:
@@ -348,42 +379,49 @@ class ProfileStore:
         finally:
             os.close(fd)
 
-    def _lock(self, path: Path, create: bool) -> int:
-        """Open the lock file and take the lock without waiting; return the open descriptor."""
+    def _lock(self, name: str) -> int:
+        """Take the lock of a profile without waiting; return the open descriptor.
+
+        The lock file lives in `<root>/.locks/` and is never deleted, so every run, create and
+        delete of one name meets the same inode. Take it before touching the profile folder.
+        """
+        lock_path = self._lock_path(name)
         try:
-            if create:
-                _private_dir(self.root)
-                _private_dir(path)
-            if path.is_symlink() or not path.is_dir():
-                raise ProfileError(f"profile {path.name} is not a folder of this tool")
-            fd = os.open(path / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+            _private_dir(self.root)
+            _private_dir(lock_path.parent)
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         except OSError as exc:
-            raise ProfileError(f"cannot open profile {path.name}: {type(exc).__name__}") from None
+            raise ProfileError(f"cannot open profile {name}: {type(exc).__name__}") from None
         try:
             os.fchmod(fd, 0o600)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             os.close(fd)
             raise ProfileBusyError(
-                f"profile {path.name} is in use by another run: wait until it ends (two runs never share one profile)"
+                f"profile {name} is in use by another run: wait until it ends (two runs never share one profile)"
             ) from None
         except OSError as exc:
             os.close(fd)
-            raise ProfileError(f"cannot lock profile {path.name}: {type(exc).__name__}") from None
+            raise ProfileError(f"cannot lock profile {name}: {type(exc).__name__}") from None
         return fd
 
     def delete(self, name: str) -> None:
         """Delete a profile folder with everything in it.
 
+        Only a folder that carries a profile file (profile.json or fingerprint.json) is removed.
+
         Raises:
-            ProfileError: The profile does not exist or cannot be removed.
+            ProfileError: The profile does not exist, is not a profile folder or cannot be removed.
             ProfileBusyError: A run is using it.
         """
         path = self._dir(name)
-        if not path.exists() and not path.is_symlink():
+        if not path.exists():
             raise ProfileError(f"profile {name} does not exist")
-        fd = self._lock(path, create=False)
+        fd = self._lock(name)
         try:
+            path = self._dir(name)  # checked again under the lock
+            if not path.is_dir() or not any((path / marker).is_file() for marker in (PROFILE_FILE, FINGERPRINT_FILE)):
+                raise ProfileError(f"{name} is not a profile folder of this tool: nothing was deleted")
             shutil.rmtree(path)
         except OSError as exc:
             raise ProfileError(f"cannot delete profile {name}: {type(exc).__name__}") from None

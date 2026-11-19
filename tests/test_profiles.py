@@ -39,7 +39,7 @@ def test_bad_profile_names_are_refused(name: str) -> None:
 def test_profile_folder_and_files_are_private(store: ProfileStore) -> None:
     with store.acquire("default", _generate) as profile:
         paths = [profile.path, profile.user_data_dir, store.root]
-        files = [profile.path / "profile.json", profile.path / "fingerprint.json", profile.path / "lock"]
+        files = [profile.path / "profile.json", profile.path / "fingerprint.json", store.root / ".locks" / "default.lock"]
     for folder in paths:
         assert stat.S_IMODE(folder.stat().st_mode) == 0o700, folder
     for file in files:
@@ -193,3 +193,112 @@ def test_timezone_is_remembered_and_a_change_is_logged(store: ProfileStore, capl
         assert store.load("default").data.timezone == "Asia/Yekaterinburg"
         profile.note_timezone("")
         assert store.load("default").data.timezone == "Asia/Yekaterinburg"
+
+
+# ---- review blockers H1, H2, H4 -------------------------------------------------------------
+
+
+def test_h1_write_private_does_not_follow_a_planted_temp_symlink(tmp_path: Path) -> None:
+    from hib.profiles import write_private
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me", encoding="utf-8")
+    target = tmp_path / "proxy-cache.json"
+    (tmp_path / "proxy-cache.json.tmp").symlink_to(victim)
+    write_private(target, "new content")
+    assert victim.read_text(encoding="utf-8") == "keep me"
+    assert target.read_text(encoding="utf-8") == "new content"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert not target.is_symlink()
+
+
+def test_h1_write_private_never_writes_through_an_existing_loose_temp_file(tmp_path: Path) -> None:
+    from hib.profiles import write_private
+
+    loose = tmp_path / "data.json.tmp"
+    loose.write_text("old", encoding="utf-8")
+    loose.chmod(0o644)
+    write_private(tmp_path / "data.json", "secret")
+    assert loose.read_text(encoding="utf-8") == "old"
+    assert loose.stat().st_mode & 0o777 == 0o644  # untouched: a fresh file was used instead
+    assert stat.S_IMODE((tmp_path / "data.json").stat().st_mode) == 0o600
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == ["data.json.tmp"]
+
+
+def test_h2_root_equal_to_the_checkout_parent_cannot_delete_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hib import profiles
+
+    checkout = tmp_path / "work"
+    checkout.mkdir()
+    (checkout / "keep.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(profiles, "REPO_ROOT", checkout.resolve())
+    store = ProfileStore(tmp_path)
+    with pytest.raises(ProfileError):
+        store.delete("work")
+    assert (checkout / "keep.txt").exists()
+    assert not (checkout / "lock").exists()
+    with pytest.raises(ProfileError):
+        with store.acquire("work", _generate):
+            pass
+    assert not (checkout / "profile.json").exists()
+
+
+def test_h2_delete_needs_a_profile_marker(store: ProfileStore) -> None:
+    folder = store.root / "stranger"
+    folder.mkdir(parents=True)
+    (folder / "notes.txt").write_text("not a profile", encoding="utf-8")
+    with pytest.raises(ProfileError):
+        store.delete("stranger")
+    assert (folder / "notes.txt").exists()
+
+
+def test_h2_acquire_does_not_chmod_through_a_symlinked_profile_folder(store: ProfileStore, tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside.chmod(0o755)
+    store.root.mkdir(parents=True)
+    (store.root / "link").symlink_to(outside)
+    with pytest.raises(ProfileError):
+        with store.acquire("link", _generate):
+            pass
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o755
+    assert list(outside.iterdir()) == []
+
+
+def test_h4_the_lock_lives_outside_the_profile_folder(store: ProfileStore) -> None:
+    with store.acquire("kept", _generate) as profile:
+        assert not (profile.path / "lock").exists()
+        lock = store.root / ".locks" / "kept.lock"
+        assert lock.is_file()
+        assert stat.S_IMODE(lock.stat().st_mode) == 0o600
+        assert stat.S_IMODE(lock.parent.stat().st_mode) == 0o700
+    store.delete("kept")
+    assert lock.exists()  # never removed: removing it is what would let two runs hold "the" lock
+    assert store.names() == []
+
+
+def test_h4_a_run_cannot_start_while_a_delete_is_removing_the_folder(
+    store: ProfileStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hib import profiles
+
+    with store.acquire("victim", _generate):
+        pass
+    real_rmtree = profiles.shutil.rmtree
+    outcome: list[str] = []
+
+    def rmtree_with_a_rival(path: Path) -> None:
+        (path / "lock").unlink(missing_ok=True)  # rmtree may remove this file before anything else
+        try:
+            with store.acquire("victim", _generate):
+                outcome.append("rival got in")
+        except ProfileBusyError:
+            outcome.append("rival refused")
+        real_rmtree(path)
+
+    monkeypatch.setattr(profiles.shutil, "rmtree", rmtree_with_a_rival)
+    store.delete("victim")
+    assert outcome == ["rival refused"]
+    assert not (store.root / "victim").exists()
