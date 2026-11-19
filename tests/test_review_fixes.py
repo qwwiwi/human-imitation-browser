@@ -197,3 +197,87 @@ def test_h3_a_profile_file_with_junk_in_last_exit_is_cleaned_in_show(isolated_pr
         profile.data.last_exit = {"country": "RU", "city": "tok-abc123-secret"}
         profile.save()
     assert store.load("default").describe()["last_exit"] == {"country": "RU", "city": ""}
+
+
+# ---------------------------------------------------------------- H8: challenges and denials stop before any input
+
+from test_blockers import LONG_TEXT, FakePage  # noqa: E402
+
+from hib.browser import open_one  # noqa: E402
+from hib.challenge import detect_challenge  # noqa: E402
+
+ARTICLE = (
+    "How sites decide who is a visitor and who is a robot. Some pages ask people to verify you are human, "
+    "others show a captcha; this article explains the ideas behind both and why they exist. " * 6
+)
+
+
+@pytest.fixture()
+def quiet(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(browser, "_sleep", lambda low, high: None)
+
+
+def _open(page: FakePage, tmp_path: Path):  # type: ignore[no-untyped-def]
+    return open_one(page, "https://shop.example.test/", browser.OpenOptions(out_dir=tmp_path), [])  # type: ignore[arg-type]
+
+
+def test_h8_security_check_page_is_a_challenge_and_gets_no_pointer_input(quiet: None, tmp_path: Path) -> None:
+    page = FakePage(200, "Security Check", "Verify you are human")
+    result = _open(page, tmp_path)
+    assert result.challenge
+    assert page.mouse.actions == 0
+    assert len(page.shots) == 1
+
+
+def test_h8_text_rich_403_titled_access_denied_is_a_denial_without_input(quiet: None, tmp_path: Path) -> None:
+    page = FakePage(403, "Access Denied", LONG_TEXT)
+    result = _open(page, tmp_path)
+    assert result.challenge
+    assert result.status == 403
+    assert page.mouse.actions == 0
+
+
+def test_h8_russian_denial_title_stops_too(quiet: None, tmp_path: Path) -> None:
+    page = FakePage(200, "Доступ ограничен", LONG_TEXT)
+    assert _open(page, tmp_path).challenge
+    assert page.mouse.actions == 0
+
+
+def test_h8_short_429_page_is_a_denial_without_input(quiet: None, tmp_path: Path) -> None:
+    page = FakePage(429, "Магазин", "Слишком много запросов с вашего адреса. Повторите попытку позже, пожалуйста. " * 2)
+    result = _open(page, tmp_path)
+    assert result.challenge
+    assert page.mouse.actions == 0
+
+
+def test_h8_page_whose_text_stays_short_is_stopped_without_input(quiet: None, tmp_path: Path) -> None:
+    page = FakePage(200, "Магазин", "Loading...")
+    assert _open(page, tmp_path).challenge
+    assert page.mouse.actions == 0
+
+
+def test_h8_rich_200_article_that_mentions_captcha_still_opens(quiet: None, tmp_path: Path) -> None:
+    page = FakePage(200, "How robots and people are told apart", ARTICLE)
+    result = _open(page, tmp_path)
+    assert not result.challenge
+    assert page.mouse.actions > 0
+
+
+def test_h8_rich_403_with_an_ordinary_title_still_opens(quiet: None, tmp_path: Path) -> None:
+    page = FakePage(403, "Магазин", LONG_TEXT)
+    assert not _open(page, tmp_path).challenge
+    assert page.mouse.actions > 0
+
+
+def test_h8_long_article_title_with_the_words_security_check_is_not_a_denial(quiet: None, tmp_path: Path) -> None:
+    title = "Security check at the airport: what to expect, how long it takes and what to pack in your bag"
+    page = FakePage(200, title, ARTICLE)
+    assert not _open(page, tmp_path).challenge
+
+
+@pytest.mark.parametrize(
+    ("title", "text"),
+    [("Just a moment...", ARTICLE), ("Attention Required!", ARTICLE), ("Магазин", "Подтвердите, что вы не робот. Подозрительная активность.")],
+)
+def test_h8_known_challenge_wordings_are_recognised(title: str, text: str) -> None:
+    assert detect_challenge(title, text, status=200).is_challenge

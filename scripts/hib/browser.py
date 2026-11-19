@@ -19,7 +19,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from hib.challenge import detect_challenge
+from hib.challenge import MIN_TEXT_CHARS, detect_challenge
 from hib.errors import BrowserStartError, HibError, PageServerError, PageTimeoutError, ProxyUnreachableError
 from hib.pace import Pacer
 from hib.profiles import Profile
@@ -34,6 +34,10 @@ HOST_OS_NAMES = {"Linux": "linux", "Windows": "windows", "Darwin": "macos"}
 FALLBACK_OS = "linux"
 PROFILE_SCREEN = Screen(min_width=1280, max_width=1920, min_height=720, max_height=1080)
 TIMEZONE_SCRIPT = "() => Intl.DateTimeFormat().resolvedOptions().timeZone"
+
+# A page whose text is still short is read again this many times, after this pause, before it is judged.
+SETTLE_READS = 3
+SETTLE_PAUSE_S = (1.5, 2.5)
 
 # Firefox network error names that mean the proxy itself failed.
 PROXY_ERROR_MARKERS = ("NS_ERROR_PROXY", "NS_ERROR_UNKNOWN_PROXY_HOST")
@@ -153,9 +157,11 @@ def _screenshot_path(out_dir: Path, url: str) -> Path:
 def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> PageResult:
     """Open one address, check for a challenge, behave like a person, save a screenshot.
 
-    A challenge page seen right after navigation is captured as it is: the page
-    is not touched. Otherwise the human-like actions run and the page is checked
-    again. HTTP 403 and other 4xx answers are not failures when the page rendered.
+    The page is classified before any pointer input. A challenge or an explicit
+    access denial (see `hib.challenge`) is captured as it is: the page is not touched,
+    nothing is retried, and the caller stops. Otherwise the human-like actions run and
+    the page is checked again. HTTP 403 and other 4xx answers are not failures when a
+    full page rendered without denial wording.
 
     Args:
         page: Browser tab to use (the same tab keeps cookies between pages).
@@ -182,9 +188,19 @@ def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> 
         if any(marker in message for marker in PROXY_ERROR_MARKERS):
             raise ProxyUnreachableError(f"the proxy failed: {message}") from None
         raise HibError(f"cannot open {url}: {message}") from None
+    status = response.status if response else None
     text, title = _read_page(page)
-    # Right after navigation only the named markers count: the text may still be rendering.
-    check = detect_challenge(title, text, min_chars=0)
+    # First look: only explicit wording counts, the text may still be rendering.
+    check = detect_challenge(title, text, min_chars=0, status=status)
+    settles = 0
+    while not check.is_challenge and len(" ".join(text.split())) < MIN_TEXT_CHARS and settles < SETTLE_READS:
+        settles += 1
+        _sleep(*SETTLE_PAUSE_S)
+        text, title = _read_page(page)
+        check = detect_challenge(title, text, min_chars=0, status=status)
+    if not check.is_challenge:
+        # The page has had time to render: judge it fully (denial status, short text) before any input.
+        check = detect_challenge(title, text, status=status)
     if not check.is_challenge:
         try:
             act_like_a_person(page)
@@ -192,8 +208,7 @@ def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> 
             # For example the page redirected while scrolling; still look at what is shown now.
             logger.warning("human-like actions interrupted: %s", redact(str(exc).splitlines()[0] if str(exc) else "", secrets))
         text, title = _read_page(page)
-        check = detect_challenge(title, text)
-    status = response.status if response else None
+        check = detect_challenge(title, text, status=status)
     if check.is_challenge:
         logger.warning("challenge page detected (%s): stop and show the screenshot to a person", check.reason)
     elif status is not None and status >= 500:
