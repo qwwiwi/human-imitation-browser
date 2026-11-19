@@ -89,3 +89,46 @@ def test_no_wording_that_reads_as_evasion() -> None:
     # «обход» stays only in the one line that says what the tool is not.
     assert README.lower().count("обход") == 1 and "не способ обходить блокировки" in README
     assert "обход" not in GUIDE.lower()
+
+
+# ---- review blockers H9 and H10 -------------------------------------------------------------
+
+HOME_PROXY = (REPO_ROOT / "docs" / "home-proxy.md").read_text(encoding="utf-8")
+
+
+def test_h9_firewall_step_finds_the_real_ssh_port_and_tests_a_second_connection_before_the_end() -> None:
+    step = HOME_PROXY.split("## Шаг 7.")[1].split("\n## ")[0]
+    assert "SSH_CONNECTION" in step  # the port of the session in use
+    assert "<ПОРТ_SSH>" in step  # the allow rule takes the real port, not a fixed 22
+    assert "port 22 proto" not in step
+    assert step.index("<ПОРТ_SSH>") < step.index("sudo ufw enable")  # allowed first
+    assert "не закрывайте" in step.lower()  # the current session stays open
+    after_enable = step.split("sudo ufw enable")[1]
+    assert "второе" in after_enable.lower() and "подключение" in after_enable.lower()
+    assert "консол" in step.lower()  # a way back if the test fails
+
+
+def test_h9_policy_warning_and_backup_come_before_the_policy_is_replaced() -> None:
+    step = HOME_PROXY.split("## Шаг 2.")[1].split("\n## ")[0]
+    replace_at = step.index("Замените содержимое")
+    warning_at = step.index("заменяет все правила")
+    backup_at = step.index("резервную копию")
+    assert warning_at < replace_at and backup_at < replace_at
+
+
+def test_h10_a_refusal_on_the_first_route_is_a_stop_not_a_retry_through_the_tool() -> None:
+    when = SKILL.split("## When to use")[1].split("## How to call")[0]
+    assert "If the same site also refuses through this tool" not in when
+    assert "never retry" in when.lower() or "do not retry" in when.lower()
+    assert "stop" in when.lower()
+
+
+def test_h10_skill_has_no_exception_for_handing_over_a_sellers_contact() -> None:
+    rule = SKILL.split("## Allowed use")[1].split("## When to use")[0]
+    assert "The one exception" not in rule
+    assert "contact of one specific seller" not in rule
+    assert "Never collect, store or output other people's personal data" in rule
+
+
+def test_h10_no_advice_to_drop_an_option_when_challenges_appear() -> None:
+    assert "drop it if challenges appear" not in SKILL

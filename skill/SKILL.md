@@ -28,7 +28,7 @@ The profile folder (`~/.local/share/hib/profiles/NAME/`) is effectively a key to
 This tool lets you use an ordinary browser on the owner's behalf, the way they would themselves, for their own personal tasks: find and compare a product, look at prices and listings, check a ticket price, put together a basket or place an order in the owner's own account when they ask.
 
 - **Personal tasks of the owner only.** Not for other people's tasks, not for a business, not for monitoring competitors.
-- **Never collect, store or output other people's personal data**: names, phone numbers, contacts, profiles of sellers, landlords, reviewers or any other users. If a page shows such data, do not copy it into your results, notes or files. The one exception: the owner needs the contact of one specific seller for their own purchase; then give only that contact, only to the owner. In Russia personal data is regulated by law, and collecting it without a legal basis is an offence.
+- **Never collect, store or output other people's personal data**: names, phone numbers, contacts, profiles of sellers, landlords, reviewers or any other users. If a page shows such data, do not copy it into your results, notes or files, and do not hand it to the owner either: describe the listing without the person's details and let the owner open the page themselves. In Russia personal data is regulated by law, and collecting it without a legal basis is an offence.
 - **No bulk or scheduled collection.** Do not loop over listings, search results or catalogues, do not run on a schedule, do not build datasets or tables of listings. Open only the pages the owner asked for.
 - **Never try to get past a login, a paywall, a block or a captcha**: not by program, not through solver services, not by changing the proxy, the profile or the browser.
 - **When the site refuses, stop and report.** A block page, a check, a captcha or a login wall ends the work on that site for this task; tell the owner what you saw (see the captcha rule below).
@@ -40,7 +40,7 @@ This tool lets you use an ordinary browser on the owner's behalf, the way they w
 ## When to use
 
 - The person asks you, for their own task, to open, look at, check or screenshot a page on a site that does not open from a server address (Ozon, Avito, Cian, Aviasales and similar Russian services).
-- A normal fetch from the server gets an error page (for example 403 from a marketplace). If the same site also refuses through this tool, stop (see Allowed use).
+- Stop on the first refusal. If a normal fetch from the server already got an access-denied page (for example 403 from a marketplace), a block or a captcha, that is the site's refusal: stop and report it to the owner. Never retry the same site through this tool, by another route or with another profile or proxy (see Allowed use). The tool does the same on its own: a page with a challenge or an explicit denial ends the run with exit code 3, and nothing is retried.
 
 Do not open many pages "just in case" or anything the person did not ask for.
 
@@ -60,7 +60,7 @@ Several pages in one browser session, opened one after another with pauses:
 Options:
 
 - `--profile NAME` – the profile to use (default `default`). It is created on first use.
-- `--no-images` – do not load images to save proxy traffic. Camoufox warns this can raise suspicion on some sites; drop it if challenges appear.
+- `--no-images` – do not load images to save proxy traffic. Camoufox warns this can raise suspicion on some sites. Never change options or profiles to get past a challenge.
 - `--out DIR` – where screenshots go (default `out/`).
 - `--timeout SECONDS` – page load timeout (default 60).
 - `--pause-min`, `--pause-max` – pause between pages in seconds (default 20 and 40). Do not lower them.
@@ -98,7 +98,7 @@ Judge the result by the screenshot and `challenge`, not by `status` alone: some 
 | 0 | page opened | report the result; send the screenshot if useful |
 | 1 | unexpected error | report the `error` text to the person |
 | 2 | wrong arguments | fix the command |
-| 3 | challenge / captcha page | follow the captcha rule below |
+| 3 | challenge / captcha page, or an explicit access-denied page | follow the captcha rule below |
 | 4 | no token or bad `HIB_PROXY_URL` | ask the person to fill in `.env` themselves |
 | 5 | proxy provider API error | tell the person: check token, balance, package |
 | 6 | proxy unreachable or rejected the login | tell the person: check package and traffic left |
