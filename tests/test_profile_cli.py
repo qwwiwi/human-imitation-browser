@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import open_page
-from conftest import preflight_for_args
+from conftest import fresh_preflight, preflight_for_args
 from hib import browser, profile_cli
 from hib.browser import PageResult
 from hib.profiles import Profile, ProfileStore
@@ -244,7 +244,8 @@ def test_provider_api_proxy_gets_the_profiles_own_session_and_exit_is_remembered
     monkeypatch.delenv("HIB_PROXY_URL")
     monkeypatch.setenv("MOBILEPROXY_API_TOKEN", "tok-1")
     monkeypatch.setattr(open_page, "resolve_session_proxy", fake_resolve)
-    assert _run(tmp_path, URL) == 0
+    fresh_preflight(isolated_profile_store, "default", proxy=ProxyConfig("gw.example.test", 9000, "u", "p"))  # the check is bound to the provider's proxy
+    assert _run(tmp_path, URL, preflighted=False) == 0
     profile = ProfileStore(isolated_profile_store).load("default")
     assert seen == [("tok-1", profile.data.proxy_session)]
     assert profile.data.last_exit == {"country": "RU", "city": "Test City"}

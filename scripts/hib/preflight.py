@@ -12,6 +12,8 @@ real visit would use, then answers four questions:
 needs a browser. Output never carries an IP address, a cookie name or value, or a proxy detail.
 """
 
+import hashlib
+import json
 import logging
 import re
 import sqlite3
@@ -34,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CHECK_URL = "https://ipinfo.io/json"
 RETRY_PAUSE_S = 5.0  # pause before the one retry of an address page that timed out (a first load through a proxy can be slow)
+BINDING_TAG = "hib-preflight-v1"  # version of what `proxy_binding` hashes
 COOKIE_STORE_FILE = "cookies.sqlite"  # Firefox keeps the cookies of a profile folder here
 NETWORK_KEYS = ("country", "city", "owner")
 _OWNER_MAX_CHARS = 80
@@ -306,22 +309,51 @@ def reputation_url_or_default(value: str | None) -> str:
     return value
 
 
-def require_fresh_preflight(profile: Profile, max_age_h: float) -> None:
-    """Refuse a real visit when the profile has no recent successful pre-flight.
+def proxy_binding(profile: Profile, proxy: ProxyConfig) -> str:
+    """Return the hash that ties a pre-flight record to one profile and one proxy configuration.
+
+    The hash covers the profile folder name, the profile's browser fingerprint and the proxy scheme, host,
+    port, login and password. It is a one-way sha256: the record never holds the proxy URL or a credential.
+    A record copied into another profile folder, or kept after the proxy settings changed, no longer matches.
+
+    Args:
+        profile: The profile the check is made for.
+        proxy: The proxy the real visit would use.
+
+    Returns:
+        64 lower-case hex characters.
+    """
+    fingerprint = hashlib.sha256(json.dumps(profile.fingerprint, sort_keys=True).encode("utf-8")).hexdigest()
+    parts = [BINDING_TAG, profile.path.name, fingerprint, proxy.scheme, proxy.host, proxy.port, proxy.username or "", proxy.password or ""]
+    return hashlib.sha256(json.dumps(parts).encode("utf-8")).hexdigest()
+
+
+def require_fresh_preflight(profile: Profile, max_age_h: float, proxy: ProxyConfig | None = None) -> None:
+    """Refuse a real visit when the profile has no recent successful pre-flight for this proxy configuration.
+
+    Without `proxy` only the cheap part is checked (a fresh, not revoked record): it can run before any
+    proxy call. With `proxy` the record must also be bound to this profile and exactly this proxy.
+    A refusal changes nothing in the profile.
 
     Args:
         profile: The profile about to be used.
         max_age_h: Longest accepted age of the pre-flight, hours.
+        proxy: The proxy the real visit will use, or None for the cheap check.
 
     Raises:
-        ConfigError: There is no successful pre-flight in the last `max_age_h` hours. The message names the command to run.
+        ConfigError: There is no valid pre-flight. The message names the command to run.
     """
-    if profile.preflight_is_fresh(max_age_h):
-        return
-    raise ConfigError(
-        f"no successful pre-flight check for profile {profile.name} in the last {max_age_h:g} hours: "
-        f"run `.venv/bin/python scripts/preflight.py --profile {profile.name}` first and read the result"
-    )
+    command = f"`.venv/bin/python scripts/preflight.py --profile {profile.name}`"
+    if not (profile.data.preflight_binding and profile.preflight_is_fresh(max_age_h)):
+        raise ConfigError(
+            f"no successful pre-flight check for profile {profile.name} in the last {max_age_h:g} hours: "
+            f"run {command} first and read the result"
+        )
+    if proxy is not None and not profile.admits(max_age_h, proxy_binding(profile, proxy)):
+        raise ConfigError(
+            f"the pre-flight check of profile {profile.name} was made for another proxy configuration or another profile folder: "
+            f"run {command} again and read the result"
+        )
 
 
 def count_persisted_cookies(data_dir: Path) -> int | None:

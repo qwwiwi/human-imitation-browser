@@ -214,13 +214,13 @@ def test_settings_carry_the_check_url_and_the_max_age(tmp_path: Path) -> None:
 class FakeObserver:
     """Stands in for hib.preflight.observe_in_browser."""
 
-    def __init__(self, observed: Seen | Exception) -> None:
+    def __init__(self, observed: Seen | BaseException) -> None:
         self.observed = observed
         self.calls: list[dict[str, object]] = []
 
     def __call__(self, proxy, profile, options, check_url, **kwargs):  # type: ignore[no-untyped-def]
         self.calls.append({"proxy": proxy, "profile": profile, "check_url": check_url, **kwargs})
-        if isinstance(self.observed, Exception):
+        if isinstance(self.observed, BaseException):
             raise self.observed
         return self.observed
 

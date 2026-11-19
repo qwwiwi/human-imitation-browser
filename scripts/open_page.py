@@ -30,7 +30,7 @@ from hib.pace import Pacer
 from hib.preflight import require_fresh_preflight
 from hib.profiles import DEFAULT_PROFILE, ProfileStore, profiles_root, validate_profile_name
 from hib.proxy import ProxyConfig, redact, resolve_proxy, warn_if_open_proxy
-from hib.session import fixed_proxy_from_settings, resolve_session_proxy
+from hib.session import STICKY_MINUTES, fixed_proxy_from_settings, resolve_session_proxy
 
 logger = logging.getLogger("open_page")
 
@@ -143,11 +143,13 @@ def main(argv: list[str]) -> int:
         else:
             store = ProfileStore(profiles_root(settings.profiles_dir))
             with store.acquire(args.profile or DEFAULT_PROFILE, browser.make_fingerprint) as profile:
-                # Before any proxy call or browser start: a real address needs a recent pre-flight check.
+                # Before any proxy call or browser start: a real address needs a recent pre-flight check
+                # (the cheap part; the part bound to the proxy configuration follows once the proxy is known).
                 require_fresh_preflight(profile, settings.preflight_max_age_h)
                 if fixed_proxy:
                     logger.info("using the proxy from HIB_PROXY_URL as it is (choose a sticky session at your provider)")
                     proxy = fixed_proxy
+                    require_fresh_preflight(profile, settings.preflight_max_age_h, proxy)
                 else:
                     if not settings.mobileproxy_token:  # cannot happen: checked in _check_proxy_settings
                         raise ConfigError("no proxy configured")
@@ -161,6 +163,8 @@ def main(argv: list[str]) -> int:
                     )
                     proxy = session.proxy
                     secrets.extend(proxy.secrets())
+                    # The provider's sticky session lasts STICKY_MINUTES (an upper bound: it may have begun before the check).
+                    require_fresh_preflight(profile, min(settings.preflight_max_age_h, STICKY_MINUTES / 60), proxy)
                     profile.data.last_exit = {"country": session.country, "city": session.city}
                 pacer = Pacer(profile.data.last_navigation, settings.min_gap_s, on_change=profile.save)
                 stopped = browser.open_pages(

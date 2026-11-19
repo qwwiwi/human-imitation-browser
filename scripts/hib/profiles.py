@@ -40,6 +40,7 @@ FINGERPRINT_FILE = "fingerprint.json"
 LOCKS_DIR = ".locks"
 USER_DATA_DIR = "user-data"
 SCHEMA_VERSION = 1
+_BINDING = re.compile(r"[0-9a-f]{64}")
 
 
 def validate_profile_name(name: str) -> str:
@@ -161,6 +162,10 @@ class ProfileData:
             (keys `country`, `city`, `owner`); never an IP address.
         cookie_count: How many cookies the browser held at the end of the last run (a count only), None if unknown.
         preflight_visits: The visit counter when the last successful pre-flight passed.
+        preflight_binding: The admission to open real sites: a hash (sha256 hex) of the profile and the proxy
+            configuration the last successful pre-flight was made for; empty when there is no admission (never
+            passed, revoked by a failed check). `last_preflight`, `network` and `cookie_count` are the baseline
+            and stay when the admission is revoked.
     """
 
     name: str
@@ -178,6 +183,7 @@ class ProfileData:
     network: dict[str, str] = field(default_factory=dict)
     cookie_count: int | None = None
     preflight_visits: int = 0
+    preflight_binding: str = ""
 
     def to_json(self) -> str:
         """Serialize to JSON text."""
@@ -207,6 +213,7 @@ class ProfileData:
         preflight_visits = raw.get("preflight_visits", 0)
         if not isinstance(preflight_visits, int) or isinstance(preflight_visits, bool) or preflight_visits < 0:
             raise ValueError("bad preflight_visits")
+        binding = raw.get("preflight_binding", "")
         return cls(
             name=name,
             created=created,
@@ -223,6 +230,7 @@ class ProfileData:
             network={str(k): str(v) for k, v in dict(raw.get("network", {})).items()},
             cookie_count=cookie_count,
             preflight_visits=preflight_visits,
+            preflight_binding=binding if isinstance(binding, str) and _BINDING.fullmatch(binding) else "",
         )
 
 
@@ -268,14 +276,16 @@ class Profile:
         self.data.last_used = _utc_now()
         self.save()
 
-    def record_preflight(self, network: dict[str, str], cookie_count: int | None) -> None:
+    def record_preflight(self, network: dict[str, str], cookie_count: int | None, binding: str = "") -> None:
         """Remember that the pre-flight passed now, and what network and cookie count it saw.
 
         Args:
             network: Country, city and owner (keys `country`, `city`, `owner`), already cleaned; empty values are kept
                 as they were before so that an unknown value never erases a known one.
             cookie_count: How many cookies the browser held, or None if unknown.
+            binding: The hash of the profile and proxy configuration the check was made for (admits the real visit).
         """
+        self.data.preflight_binding = binding
         merged = dict(self.data.network)
         merged.update({key: value for key, value in network.items() if value})
         self.data.network = merged
@@ -284,6 +294,22 @@ class Profile:
         self.data.last_preflight = _utc_now()
         self.data.preflight_visits = self.data.visits
         self.save()
+
+    def revoke_preflight(self) -> None:
+        """Take the admission back; the recorded address and cookie count stay as the baseline for the next check."""
+        if self.data.preflight_binding:
+            self.data.preflight_binding = ""
+            self.save()
+
+    def admits(self, max_age_h: float, binding: str, now: datetime | None = None) -> bool:
+        """True when this profile is admitted to a real site: a fresh pre-flight made for exactly this binding.
+
+        Args:
+            max_age_h: Longest accepted age of the pre-flight, hours.
+            binding: The hash of the profile and the proxy configuration about to be used (never empty for a real check).
+            now: Current time (replaceable in tests).
+        """
+        return bool(binding) and self.data.preflight_binding == binding and self.preflight_is_fresh(max_age_h, now)
 
     def note_cookie_count(self, cookie_count: int) -> None:
         """Remember how many cookies the browser held at the end of a run (a count only)."""

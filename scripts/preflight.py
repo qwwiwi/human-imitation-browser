@@ -17,7 +17,10 @@ value, or a proxy detail. Diagnostics go to stderr.
 Exit codes: 0 ok; 12 the check failed (the address changed, the profile memory is empty for a used
 profile, or with --strict the address is flagged as hosting/proxy); a proxy failure keeps its own
 code (5, 6); the others are listed in hib/errors.py.
-A passed check is remembered in the profile; open_page.py refuses a real address without a recent one.
+A passed check is remembered in the profile, bound to that profile and that proxy configuration (a hash; no URL or
+login is stored); open_page.py refuses a real address without a recent one for the same configuration.
+Every run of this check first takes the admission back; only a passing run gives it again. A failed run keeps the
+address and cookie count recorded earlier as the baseline.
 
 Example:
     .venv/bin/python scripts/preflight.py --profile my-shop
@@ -130,13 +133,16 @@ def main(argv: list[str]) -> int:
                 ).proxy
                 secrets.extend(proxy.secrets())
             before = core.before_from_profile(profile)
+            # Revoked before the browser starts: a check that fails, crashes or is killed leaves no admission.
+            # The recorded address and cookie count stay as the baseline of the next check.
+            profile.revoke_preflight()
             logger.info("pre-flight for profile %s: opening the address-check page through its proxy", profile.name)
             observed = core.observe_in_browser(proxy, profile, options, check_url, reputation_url=reputation_url)
             seen = core.sanitized(observed, secrets)
             verdict = core.assess(before, seen, strict=args.strict, accept_address_change=args.accept_address_change)
             if verdict.ok:
-                # A failed check records nothing: running it again must not turn a changed address into the normal one.
-                profile.record_preflight(core.network_of(seen), seen.cookies_at_end)
+                # A failed check records nothing new: running it again must not turn a changed address into the normal one.
+                profile.record_preflight(core.network_of(seen), seen.cookies_at_end, binding=core.proxy_binding(profile, proxy))
             report = core.build_report(profile.name, seen, verdict)
     except HibError as exc:
         message = redact(str(exc), secrets)
