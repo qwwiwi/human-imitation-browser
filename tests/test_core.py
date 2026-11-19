@@ -130,3 +130,13 @@ def test_missing_env_file_gives_empty_settings(tmp_path: Path) -> None:
     settings = load_settings(tmp_path / "missing.env", {})
     assert settings.mobileproxy_token is None
     assert settings.proxy_url is None
+
+
+def test_settings_read_the_profile_variables_and_keep_secrets_hidden(tmp_path: Path) -> None:
+    settings = load_settings(
+        tmp_path / "missing.env",
+        {"HIB_PROFILES_DIR": "/x/p", "HIB_PROXY_STATE": "st", "HIB_PROXY_CITY": "ct", "HIB_PROXY_ID": "9", "HIB_MIN_GAP_S": "30",
+         "MOBILEPROXY_API_TOKEN": "tok-secret"},
+    )
+    assert (settings.profiles_dir, settings.proxy_state, settings.proxy_city, settings.proxy_id, settings.min_gap_s) == ("/x/p", "st", "ct", "9", 30.0)
+    assert "tok-secret" not in repr(settings)

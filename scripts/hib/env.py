@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hib.errors import ConfigError
+from hib.pace import DEFAULT_MIN_GAP_S, parse_min_gap
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,20 @@ class Settings:
     Attributes:
         mobileproxy_token: API token of mobileproxy.space, or None.
         proxy_url: Full proxy URL for any other provider, or None.
+        profiles_dir: Override of the profile folder (HIB_PROFILES_DIR), or None.
+        proxy_state: Wanted proxy state/region (HIB_PROXY_STATE), or None.
+        proxy_city: Wanted proxy city (HIB_PROXY_CITY), or None.
+        proxy_id: Provider's proxy id (HIB_PROXY_ID), or None to take it from the account.
+        min_gap_s: Minimal seconds between navigations to one host (HIB_MIN_GAP_S).
     """
 
     mobileproxy_token: str | None
     proxy_url: str | None
+    profiles_dir: str | None = None
+    proxy_state: str | None = None
+    proxy_city: str | None = None
+    proxy_id: str | None = None
+    min_gap_s: float = DEFAULT_MIN_GAP_S
 
     def __repr__(self) -> str:
         """Never show secret values."""
@@ -87,4 +98,12 @@ def load_settings(env_file: Path = DEFAULT_ENV_FILE, environ: Mapping[str, str] 
         value = env.get(name) or file_values.get(name) or ""
         return value.strip() or None
 
-    return Settings(mobileproxy_token=pick("MOBILEPROXY_API_TOKEN"), proxy_url=pick("HIB_PROXY_URL"))
+    return Settings(
+        mobileproxy_token=pick("MOBILEPROXY_API_TOKEN"),
+        proxy_url=pick("HIB_PROXY_URL"),
+        profiles_dir=pick("HIB_PROFILES_DIR"),
+        proxy_state=pick("HIB_PROXY_STATE"),
+        proxy_city=pick("HIB_PROXY_CITY"),
+        proxy_id=pick("HIB_PROXY_ID"),
+        min_gap_s=parse_min_gap(pick("HIB_MIN_GAP_S")),
+    )

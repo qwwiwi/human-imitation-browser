@@ -4,6 +4,9 @@
 Prints one JSON line: {"source", "country", "city", "org", "ru", "traffic_left_mb"}.
 "ru" is true when the exit address is in Russia; the exit code stays 0 either way,
 because the proxy itself works.
+For a SOCKS proxy (socks5:// in HIB_PROXY_URL) the check cannot run here, because the
+standard library has no SOCKS support: the line is {"source", "checked": false, "note"}
+with the exit code 0, and the note says how to check through the browser instead.
 Never prints the login, the password or the token.
 
 Example:
@@ -18,9 +21,24 @@ from pathlib import Path
 
 from hib.env import DEFAULT_ENV_FILE, load_settings
 from hib.errors import EXIT_OK, ConfigError, HibError, ProxyApiError
-from hib.proxy import call_mobileproxy, check_exit_ip, proxy_from_api_response, proxy_from_url, redact, traffic_left_mb
+from hib.proxy import (
+    call_mobileproxy,
+    can_check_exit_ip,
+    check_exit_ip,
+    proxy_from_api_response,
+    proxy_from_url,
+    redact,
+    traffic_left_mb,
+    warn_if_open_proxy,
+)
 
 logger = logging.getLogger("check_proxy")
+
+SOCKS_NOTE = (
+    "the exit address was NOT checked: this script cannot go through a SOCKS proxy (no SOCKS support without "
+    "an extra package). Check it through the browser instead: "
+    "scripts/open_page.py https://ipinfo.io/json --profile <name>"
+)
 
 
 def main(argv: list[str]) -> int:
@@ -58,6 +76,12 @@ def main(argv: list[str]) -> int:
         else:
             raise ConfigError("no proxy configured: put MOBILEPROXY_API_TOKEN (or HIB_PROXY_URL) into the .env file")
         secrets.extend(proxy.secrets())
+        if source == "HIB_PROXY_URL":
+            warn_if_open_proxy(proxy)
+        if not can_check_exit_ip(proxy):
+            logger.warning("%s", SOCKS_NOTE)
+            sys.stdout.write(json.dumps({"source": source, "checked": False, "note": SOCKS_NOTE}, ensure_ascii=False) + "\n")
+            return EXIT_OK
         logger.info("proxy received, checking the exit address")
         info = check_exit_ip(proxy)
     except HibError as exc:
