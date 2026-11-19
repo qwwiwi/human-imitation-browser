@@ -112,7 +112,7 @@ def test_https_proxy_url_is_still_refused() -> None:
 def test_redaction_does_not_break_without_credentials() -> None:
     config = proxy_from_url("socks5://127.0.0.1:18931")
     assert config.secrets() == []
-    assert redact("cannot connect to 127.0.0.1:18931", config.secrets()) == "cannot connect to 127.0.0.1:18931"
+    assert redact("cannot connect to proxy.example.test:18931", config.secrets()) == "cannot connect to proxy.example.test:18931"  # an address literal is stripped by H2, a host name is not
 
 
 def test_redaction_still_hides_credentials_when_present() -> None:

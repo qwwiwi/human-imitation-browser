@@ -46,6 +46,7 @@ def isolated_profile_store(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: py
     """Point HIB_PROFILES_DIR at a throw-away folder for every test."""
     root = tmp_path_factory.mktemp("hib-profiles") / "profiles"
     monkeypatch.setenv("HIB_PROFILES_DIR", str(root))
+    monkeypatch.setenv("HIB_EPHEMERAL_HOSTS", "shop.example.test")  # the synthetic shop of the tests counts as neutral for --ephemeral
     for name in ("HIB_PROXY_STATE", "HIB_PROXY_CITY", "HIB_PROXY_ID", "HIB_MIN_GAP_S"):
         monkeypatch.delenv(name, raising=False)
     return root

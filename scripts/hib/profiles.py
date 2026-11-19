@@ -28,6 +28,7 @@ from pathlib import Path
 
 from hib.env import REPO_ROOT
 from hib.errors import ConfigError, ProfileBusyError, ProfileError
+from hib.proxy import redact
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +89,8 @@ def clean_place(value: str, secrets: Iterable[str] = ()) -> str:
     """Return a country or city label only if it looks like a place name, otherwise an empty string.
 
     The provider's text is untrusted: it is shown by `profiles.py show` and kept in profile.json.
-    A label with digits or symbols, a long one, or one that contains any of the given secrets
-    (case-insensitive) is dropped.
+    A label with digits or symbols, a long one, one with an address literal, or one that contains any of
+    the given secrets (an exact match of any length, or a case-insensitive one from 3 characters) is dropped.
 
     Args:
         value: Text from the provider answer or from profile.json.
@@ -100,8 +101,9 @@ def clean_place(value: str, secrets: Iterable[str] = ()) -> str:
     """
     if len(value) > _PLACE_MAX_CHARS or not _PLACE_PATTERN.fullmatch(value):
         return ""
+    secrets = list(secrets)
     low = value.lower()
-    if any(len(secret) >= 3 and secret.lower() in low for secret in secrets):
+    if redact(value, secrets) != value or any(len(secret) >= 3 and secret.lower() in low for secret in secrets):
         return ""
     return value
 
@@ -340,7 +342,7 @@ class Profile:
             "timezone": d.timezone,
             "last_exit": {key: clean_place(value) for key, value in d.last_exit.items()},
             "last_preflight": d.last_preflight,
-            "network": {key: value for key, value in d.network.items() if key in ("country", "city", "owner")},
+            "network": {key: value if redact(value, ()) == value else "" for key, value in d.network.items() if key in ("country", "city", "owner")},
         }
 
 

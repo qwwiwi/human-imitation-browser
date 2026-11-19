@@ -10,7 +10,8 @@ Prints one JSON line per page to stdout:
 On an error prints one JSON line {"error", "exit_code"} instead
 (a malformed HIB_PROXY_URL is exit 4, an HTTP 5xx answer is exit 9, a profile in use is exit 10).
 A profile without a successful `scripts/preflight.py` in the last 12 hours (HIB_PREFLIGHT_MAX_AGE_H) is refused
-with exit 4 before any proxy call or browser start; `--ephemeral` test pages are exempt.
+with exit 4 before any proxy call or browser start. `--ephemeral` (no profile) is only for neutral check pages
+(example.com, ipinfo.io, ip-api.com); any other address with it is exit 4.
 Diagnostics go to stderr. Exit codes are listed in hib/errors.py and README.md.
 
 Example:
@@ -23,7 +24,7 @@ import logging
 import sys
 from pathlib import Path
 
-from hib.env import DEFAULT_ENV_FILE, REPO_ROOT, load_settings
+from hib.env import DEFAULT_ENV_FILE, REPO_ROOT, load_settings, require_neutral_urls
 from hib.errors import EXIT_CHALLENGE, EXIT_OK, EXIT_UNEXPECTED, ConfigError, HibError, ProfileError
 from hib.pace import Pacer
 from hib.preflight import require_fresh_preflight
@@ -110,6 +111,8 @@ def main(argv: list[str]) -> int:
     try:
         settings = load_settings(args.env_file)
         secrets.extend(s for s in (settings.mobileproxy_token,) if s)
+        if args.ephemeral:
+            require_neutral_urls(args.urls, settings.ephemeral_hosts)  # before any proxy call or browser start
         # Imported here so that a broken browser install still gives a clean JSON error.
         from hib import browser
 

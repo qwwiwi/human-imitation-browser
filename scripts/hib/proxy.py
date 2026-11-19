@@ -7,6 +7,8 @@ redact() removes them from error texts.
 import ipaddress
 import json
 import logging
+import re
+import string
 import urllib.error
 import urllib.request
 from collections.abc import Iterable, Mapping
@@ -110,20 +112,74 @@ class ProxyConfig:
         return found
 
 
+_IPV4_LITERAL = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
+_IPV6_CANDIDATE = re.compile(r"[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*")
+_IPV6_CANDIDATE_MAX_CHARS = 64  # longer runs are not an address; this keeps the search below quadratic on short input only
+
+
+def _strip_ipv6(text: str) -> str:
+    """Replace every IPv6 literal (full or compressed, also IPv4-mapped) in the text with `***`."""
+
+    def fix(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if token.count(":") < 2 or len(token) > _IPV6_CANDIDATE_MAX_CHARS:
+            return token
+        for start in range(len(token)):
+            for end in range(len(token), start + 1, -1):
+                part = token[start:end]
+                if not any(ch in string.hexdigits for ch in part):
+                    continue  # `::` alone names no address
+                try:
+                    ipaddress.IPv6Address(part)
+                except ValueError:
+                    continue
+                return token[:start] + "***" + token[end:]
+        return token
+
+    return _IPV6_CANDIDATE.sub(fix, text)
+
+
 def redact(text: str, secrets: Iterable[str]) -> str:
-    """Replace every secret value in text with `***`.
+    """Make a text safe to print or store: the one sanitising function of this tool.
+
+    It removes every secret value (any length, exact match) and every IP address literal
+    (IPv4, IPv6 in full or compressed form). A network owner such as `AS12345 NAME LTD` is untouched.
 
     Args:
-        text: Any message, for example an exception text.
+        text: Any message, for example an exception text or a third party's answer.
         secrets: Values to hide; empty strings are ignored.
 
     Returns:
-        The text without the secrets.
+        The text with each secret and each address replaced by `***`.
     """
     # Longest first so that a secret containing another one is hidden whole.
     for secret in sorted((s for s in secrets if s), key=len, reverse=True):
         text = text.replace(secret, "***")
-    return text
+    return _IPV4_LITERAL.sub("***", _strip_ipv6(text))
+
+
+def redact_report(data: dict[str, object], secrets: Iterable[str]) -> dict[str, object]:
+    """Apply `redact` to every text inside a JSON-ready dict (nested dicts and lists included); other values stay.
+
+    Args:
+        data: The result that is about to be printed.
+        secrets: Values to hide.
+
+    Returns:
+        A new dict.
+    """
+    hidden = list(secrets)
+
+    def walk(value: object) -> object:
+        if isinstance(value, str):
+            return redact(value, hidden)
+        if isinstance(value, dict):
+            return {key: walk(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [walk(item) for item in value]
+        return value
+
+    return {key: walk(item) for key, item in data.items()}
 
 
 def _first_item(data: object) -> dict[str, object]:
@@ -267,7 +323,7 @@ def warn_if_open_proxy(proxy: ProxyConfig) -> bool:
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuse every redirect so the Bearer token is never sent to another address."""
+    """Refuse every redirect so that neither the Bearer token nor the proxy login is ever sent to another address."""
 
     def redirect_request(
         self,
@@ -378,7 +434,7 @@ def _get_json_via_proxy(proxy: ProxyConfig, url: str) -> object:
 
     Raises:
         ProxyUnreachableError: The proxy refused, failed the login or timed out, the page
-            answered an error, or the NO_PROXY setting would make the request skip the proxy
+            answered an error or a redirect (never followed: a redirect target could skip the proxy), or the NO_PROXY setting would make the request skip the proxy
             (the answer would then describe this server's own address).
         ConfigError: The proxy is SOCKS: urllib cannot speak SOCKS (see `can_check_exit_ip`).
     """
@@ -391,7 +447,7 @@ def _get_json_via_proxy(proxy: ProxyConfig, url: str) -> object:
             "remove that entry and run it again"
         )
     proxy_url = proxy.as_url()
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}), _NoRedirect)
     try:
         with opener.open(url, timeout=API_TIMEOUT_S) as resp:
             return json.loads(resp.read())
@@ -439,16 +495,12 @@ def parse_reputation(data: object) -> dict[str, bool | None]:
 
     Returns:
         Mapping with the keys `hosting`, `proxy` and `mobile`: True or False when the service said so
-        (status `success`, real booleans), otherwise None (unknown). `hosting` and `proxy` are unknown
-        together; `mobile` stands on its own.
+        (status `success`, a real boolean), otherwise None (unknown). Each flag stands on its own: a
+        malformed one never hides a good one.
     """
-    unknown: dict[str, bool | None] = {"hosting": None, "proxy": None, "mobile": None}
     if not isinstance(data, dict) or data.get("status") != "success":
-        return unknown
-    hosting, flagged = _bool_or_none(data.get("hosting")), _bool_or_none(data.get("proxy"))
-    if hosting is None or flagged is None:
-        return {**unknown, "mobile": _bool_or_none(data.get("mobile"))}
-    return {"hosting": hosting, "proxy": flagged, "mobile": _bool_or_none(data.get("mobile"))}
+        return {"hosting": None, "proxy": None, "mobile": None}
+    return {name: _bool_or_none(data.get(name)) for name in ("hosting", "proxy", "mobile")}
 
 
 def check_reputation(proxy: ProxyConfig, url: str = PROXY_REPUTATION_URL) -> dict[str, bool | None]:

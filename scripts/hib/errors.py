@@ -69,6 +69,12 @@ class PageServerError(HibError):
     exit_code = 9
 
 
+class PageRefusedError(HibError):
+    """A page shows a refusal or a challenge: the run stops, a person decides; nothing is retried or worked around."""
+
+    exit_code = 3
+
+
 class ProfileBusyError(HibError):
     """Another run is using this profile right now."""
 

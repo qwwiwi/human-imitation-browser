@@ -72,6 +72,9 @@ class FakeTab:
         self.api = {url: list(outcomes) for url, outcomes in (api or {}).items()}
         self.visited: list[str] = []
         self.requested: list[tuple[str, float]] = []
+        self.redirect_limits: list[int | None] = []
+        self.shown_title = ""  # what the tab shows after a failed load
+        self.shown_text = ""
         self.context = SimpleNamespace(cookies=lambda: [], request=SimpleNamespace(get=self._api_get))
 
     def goto(self, url: str, wait_until: str = "load", timeout: float = 0) -> FakeResponse:
@@ -81,8 +84,15 @@ class FakeTab:
             raise outcome
         return FakeResponse(*outcome)
 
-    def _api_get(self, url: str, timeout: float = 0) -> FakeApiResponse:
+    def title(self) -> str:
+        return self.shown_title
+
+    def inner_text(self, selector: str, timeout: float = 0) -> str:
+        return self.shown_text
+
+    def _api_get(self, url: str, timeout: float = 0, max_redirects: int | None = None) -> FakeApiResponse:
         self.requested.append((url, timeout))
+        self.redirect_limits.append(max_redirects)
         outcome = self.api[url].pop(0)
         if isinstance(outcome, Exception):
             raise outcome

@@ -373,7 +373,8 @@ def fetch_reputation(page: Page, url: str, timeout_s: float, secrets: list[str])
 
     This is a request made by the context of the tab, not a page navigation: the plain-http answer is not
     shown as a page, and the request goes through the proxy of this very context. Nothing is ever sent from
-    this machine directly. Any failure (no request API, timeout, HTTP status other than 200, an answer that
+    this machine directly, and no redirect is followed. Any failure (no request API, timeout, HTTP status other than 200
+    (a redirect included), an answer that
     is not JSON, a status other than `success`) is not an error: the flags are then None (unknown).
 
     Args:
@@ -386,13 +387,30 @@ def fetch_reputation(page: Page, url: str, timeout_s: float, secrets: list[str])
         Mapping with the keys `hosting`, `proxy` and `mobile`: True, False or None (unknown).
     """
     try:
-        response = page.context.request.get(url, timeout=timeout_s * 1000)
+        # max_redirects=0: a redirect is never followed (its target could be a host that skips the proxy); a 3xx is "unknown".
+        response = page.context.request.get(url, timeout=timeout_s * 1000, max_redirects=0)
         if response.status != 200:
             raise HibError(f"the reputation service answered HTTP {response.status}")
         return parse_reputation(response.json())
     except (PlaywrightError, HibError, AttributeError, ValueError) as exc:
         logger.info("reputation lookup failed: %s", redact(str(exc).splitlines()[0] if str(exc) else type(exc).__name__, secrets))
         return parse_reputation(None)
+
+
+def refusal_reason(page: Page) -> str:
+    """Say why the page shown now is a refusal or a challenge page, or return an empty string.
+
+    Only looks (title and visible text, see `hib.challenge`); it never interacts with the page.
+
+    Args:
+        page: The tab, for example after a load that timed out.
+
+    Returns:
+        The reason, empty when the page does not look like a refusal or a challenge.
+    """
+    text, title = _read_page(page)
+    check = detect_challenge(title, text, min_chars=0)
+    return check.reason if check.is_challenge else ""
 
 
 def stored_cookie_count(page: Page) -> int | None:

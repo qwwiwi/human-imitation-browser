@@ -14,17 +14,20 @@ needs a browser. Output never carries an IP address, a cookie name or value, or 
 
 import logging
 import re
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from hib.errors import ConfigError, HibError, PageTimeoutError
+from hib.errors import ConfigError, HibError, PageRefusedError, PageTimeoutError
 from hib.profiles import Profile, clean_place
 from hib.proxy import BROWSER_REPUTATION_URL, ProxyConfig, redact
 
 if TYPE_CHECKING:
+    from playwright.sync_api import Page
+
     from hib.browser import OpenOptions
 
 logger = logging.getLogger(__name__)
@@ -34,15 +37,14 @@ RETRY_PAUSE_S = 5.0  # pause before the one retry of an address page that timed 
 COOKIE_STORE_FILE = "cookies.sqlite"  # Firefox keeps the cookies of a profile folder here
 NETWORK_KEYS = ("country", "city", "owner")
 _OWNER_MAX_CHARS = 80
-_IPV4 = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
-_IPV6 = re.compile(r"(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F]{0,4}")
 
 
 def sanitize_owner(value: str, secrets: list[str]) -> str:
     """Return the network owner text only if it is safe to store and print, otherwise an empty string.
 
     The text comes from a third-party page. It is dropped when it is long, has line breaks or other
-    unprintable characters, looks like it contains an IP address, or contains one of the secrets.
+    unprintable characters, or when the one sanitising function (`hib.proxy.redact`) would change it:
+    it holds an IP address (IPv4, IPv6 in any form) or an exact match of any secret.
 
     Args:
         value: Text from the address-check page (for example `AS64500 Example Net`).
@@ -54,7 +56,7 @@ def sanitize_owner(value: str, secrets: list[str]) -> str:
     text = value.strip()
     if not text or len(text) > _OWNER_MAX_CHARS or not text.isprintable():
         return ""
-    if _IPV4.search(text) or _IPV6.search(text):
+    if redact(text, secrets) != text:
         return ""
     lowered = text.lower()
     if any(len(secret) >= 3 and secret.lower() in lowered for secret in secrets):
@@ -93,7 +95,8 @@ class Seen:
         proxy_flag: Same for the proxy flag.
         cookies_at_start: Cookies the browser held when it started, None if it could not say.
         cookies_at_end: Cookies the browser held when the check ended, None if it could not say.
-        cookie_store_present: The cookie store file exists in the profile folder after the run.
+        cookie_store_present: The cookie store file existed in the profile folder BEFORE the browser started (the start recreates a missing one).
+        cookies_persisted: Cookies the cookie store file held before the browser started (a count only), None if there was no readable store.
         data_dir_empty: The browser data folder was empty before the run.
         screenshot: Path of the screenshot of the check page, empty if it could not be taken.
         mobile: True when the reputation service says the address belongs to a mobile operator, False when not, None if unknown.
@@ -110,6 +113,7 @@ class Seen:
     data_dir_empty: bool
     screenshot: str
     mobile: bool | None = None
+    cookies_persisted: int | None = None
 
 
 @dataclass(frozen=True)
@@ -178,7 +182,7 @@ def _memory_problems(before: Before, seen: Seen) -> list[str]:
         reasons.append("the browser data folder is empty")
     if not seen.cookie_store_present:
         reasons.append("the cookie store file is missing")
-    if seen.cookies_at_start == 0 and (before.cookie_count or 0) > 0:
+    if (before.cookie_count or 0) > 0 and (seen.cookies_at_start == 0 or seen.cookies_persisted == 0):
         reasons.append("the stored cookies are gone")
     return reasons
 
@@ -186,8 +190,9 @@ def _memory_problems(before: Before, seen: Seen) -> list[str]:
 def assess(before: Before, seen: Seen, *, strict: bool = False, accept_address_change: bool = False) -> Verdict:
     """Apply the pre-flight rules.
 
-    Rules: a country, city or owner that differs from the last pre-flight is a change (a value the
-    lookup did not give is unknown, not a change); a profile that was used before but has no memory
+    Rules: an address page that gave no country is not a usable answer and fails; a country, city or owner
+    that differs from the last pre-flight is a change (a value the lookup did not give is unknown, not a
+    change); a profile that was used before but has no memory
     fails; hosting/proxy flags are a warning, and fail only with `strict`; unknown flags never fail.
 
     Args:
@@ -201,6 +206,9 @@ def assess(before: Before, seen: Seen, *, strict: bool = False, accept_address_c
     """
     problems: list[str] = []
     soft: list[str] = []
+
+    if not seen.country:
+        problems.append("the address-check page gave no usable address (no country): the address is unknown")
 
     old = {key: before.network.get(key, "") for key in NETWORK_KEYS}
     new = network_of(seen)
@@ -316,12 +324,67 @@ def require_fresh_preflight(profile: Profile, max_age_h: float) -> None:
     )
 
 
+def count_persisted_cookies(data_dir: Path) -> int | None:
+    """Count the cookies in the cookie store file of a browser data folder (a number only: no name or value is read).
+
+    Call it while the browser is not running. The file is opened read-only.
+
+    Args:
+        data_dir: The browser data folder of a profile.
+
+    Returns:
+        The count, or None when there is no store file or it cannot be read as a cookie store.
+    """
+    store = data_dir / COOKIE_STORE_FILE
+    if not store.is_file():
+        return None
+    try:
+        db = sqlite3.connect(f"{store.resolve().as_uri()}?mode=ro", uri=True, timeout=2.0)
+    except sqlite3.Error:
+        return None
+    try:
+        row = db.execute("SELECT COUNT(*) FROM moz_cookies").fetchone()  # Firefox's own table name
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
+    return int(row[0]) if row else None
+
+
 def _is_empty_folder(path: Path) -> bool:
     """True when the folder is missing or has nothing in it."""
     try:
         return not any(path.iterdir())
     except OSError:
         return True
+
+
+def _fetch_check_page(page: "Page", check_url: str, timeout_s: float, secrets: list[str], sleep: Callable[[float], None]) -> object:
+    """Load the address-check page; a load that timed out is tried once more, unless the page shows a refusal.
+
+    The page is looked at before any retry: a refusal or a challenge is a stop, never a retry.
+
+    Raises:
+        PageRefusedError: The page shows a refusal or a challenge (after a first or a second timeout).
+        PageTimeoutError: The page did not load in time, twice, and shows no refusal.
+    """
+    from hib import browser
+
+    for attempt in (1, 2):
+        try:
+            return browser.fetch_json_page(page, check_url, timeout_s, secrets)
+        except PageTimeoutError:
+            reason = browser.refusal_reason(page)
+            if reason:
+                raise PageRefusedError(
+                    f"the address-check page shows a refusal or a challenge ({reason}): the run stops here, "
+                    "it is not tried again and the tool does not try to get past it; a person must look at it"
+                ) from None
+            if attempt == 2:
+                raise
+            logger.info("the address-check page timed out: trying once more in %g s", RETRY_PAUSE_S)
+            sleep(RETRY_PAUSE_S)
+    raise AssertionError("unreachable")  # pragma: no cover - the loop returns or raises
 
 
 def observe_in_browser(
@@ -353,6 +416,7 @@ def observe_in_browser(
     Raises:
         ProxyUnreachableError: The proxy failed.
         PageTimeoutError: The check page did not load in time, twice.
+        PageRefusedError: The check page shows a refusal or a challenge (no retry).
         BrowserStartError: The browser did not start.
         HibError: The check page answered something unusable.
     """
@@ -360,15 +424,13 @@ def observe_in_browser(
 
     secrets = proxy.secrets()
     options.out_dir.mkdir(parents=True, exist_ok=True)
+    # Looked at before the launch: starting the browser recreates a missing cookie store and would hide its loss.
     data_dir_empty = _is_empty_folder(profile.user_data_dir)
+    store_present = (profile.user_data_dir / COOKIE_STORE_FILE).is_file()
+    persisted = count_persisted_cookies(profile.user_data_dir)
     with browser.launch(proxy, options, profile) as page:
         at_start = browser.stored_cookie_count(page)
-        try:
-            info = browser.fetch_json_page(page, check_url, options.timeout_s, secrets)
-        except PageTimeoutError:
-            logger.info("the address-check page timed out: trying once more in %g s", RETRY_PAUSE_S)
-            sleep(RETRY_PAUSE_S)
-            info = browser.fetch_json_page(page, check_url, options.timeout_s, secrets)
+        info = _fetch_check_page(page, check_url, options.timeout_s, secrets, sleep)
         if not isinstance(info, dict):
             raise HibError("the address-check page returned unexpected data")
         shot = browser.screenshot_path(options.out_dir, check_url)
@@ -389,7 +451,8 @@ def observe_in_browser(
         mobile=flags["mobile"],
         cookies_at_start=at_start,
         cookies_at_end=at_end,
-        cookie_store_present=(profile.user_data_dir / COOKIE_STORE_FILE).is_file(),
+        cookie_store_present=store_present,
+        cookies_persisted=persisted,
         data_dir_empty=data_dir_empty,
         screenshot=screenshot,
     )

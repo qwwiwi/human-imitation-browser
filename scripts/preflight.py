@@ -33,7 +33,7 @@ from hib import preflight as core
 from hib.env import DEFAULT_ENV_FILE, REPO_ROOT, load_settings
 from hib.errors import EXIT_OK, EXIT_PREFLIGHT_FAILED, EXIT_UNEXPECTED, ConfigError, HibError, ProfileError
 from hib.profiles import DEFAULT_PROFILE, ProfileStore, profiles_root, validate_profile_name
-from hib.proxy import redact, warn_if_open_proxy
+from hib.proxy import redact, redact_report, warn_if_open_proxy
 from hib.session import fixed_proxy_from_settings, resolve_session_proxy
 
 logger = logging.getLogger("preflight")
@@ -153,7 +153,7 @@ def main(argv: list[str]) -> int:
         logger.error("%s", message)
         emit_json({"error": message, "exit_code": EXIT_UNEXPECTED})
         return EXIT_UNEXPECTED
-    emit_json(report)
+    emit_json(redact_report(report, secrets))  # the one sanitising function, also on the result
     for problem in verdict.problems:
         logger.error("pre-flight failed: %s", problem)
     for note in verdict.problems_soft:

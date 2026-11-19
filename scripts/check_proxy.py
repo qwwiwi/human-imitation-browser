@@ -33,6 +33,7 @@ from hib.proxy import (
     proxy_from_api_response,
     proxy_from_url,
     redact,
+    redact_report,
     traffic_left_mb,
     warn_if_open_proxy,
 )
@@ -120,10 +121,10 @@ def main(argv: list[str]) -> int:
         "proxy_flag": reputation["proxy"],
         "mobile": reputation.get("mobile"),
     }
-    sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    sys.stdout.write(json.dumps(redact_report(result, secrets), ensure_ascii=False) + "\n")  # the one sanitising function
     logger.info("%s", reputation_line(reputation))
     if info.get("country") != "RU":
-        logger.warning("the exit address is not in Russia (country=%s): check the proxy package", info.get("country"))
+        logger.warning("the exit address is not in Russia (country=%s): check the proxy package", redact(str(info.get("country")), secrets))
     if left is not None and left < 100:
         logger.warning("less than 100 MB of proxy traffic left")
     return EXIT_OK
