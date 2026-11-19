@@ -28,6 +28,7 @@ from pathlib import Path
 
 from hib.env import REPO_ROOT
 from hib.errors import ConfigError, ProfileBusyError, ProfileError
+from hib.proxy import redact
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ FINGERPRINT_FILE = "fingerprint.json"
 LOCKS_DIR = ".locks"
 USER_DATA_DIR = "user-data"
 SCHEMA_VERSION = 1
+_BINDING = re.compile(r"[0-9a-f]{64}")
 
 
 def validate_profile_name(name: str) -> str:
@@ -88,8 +90,8 @@ def clean_place(value: str, secrets: Iterable[str] = ()) -> str:
     """Return a country or city label only if it looks like a place name, otherwise an empty string.
 
     The provider's text is untrusted: it is shown by `profiles.py show` and kept in profile.json.
-    A label with digits or symbols, a long one, or one that contains any of the given secrets
-    (case-insensitive) is dropped.
+    A label with digits or symbols, a long one, one with an address literal, or one that contains any of
+    the given secrets (an exact match of any length, or a case-insensitive one from 3 characters) is dropped.
 
     Args:
         value: Text from the provider answer or from profile.json.
@@ -100,8 +102,9 @@ def clean_place(value: str, secrets: Iterable[str] = ()) -> str:
     """
     if len(value) > _PLACE_MAX_CHARS or not _PLACE_PATTERN.fullmatch(value):
         return ""
+    secrets = list(secrets)
     low = value.lower()
-    if any(len(secret) >= 3 and secret.lower() in low for secret in secrets):
+    if redact(value, secrets) != value or any(len(secret) >= 3 and secret.lower() in low for secret in secrets):
         return ""
     return value
 
@@ -154,6 +157,15 @@ class ProfileData:
         proxy_session: Id of the sticky proxy session (not shown anywhere).
         last_exit: Country and city the proxy settings pointed to on the last run.
         last_navigation: Host -> time (seconds since epoch) of the last navigation.
+        last_preflight: Time (UTC, ISO 8601) of the last successful pre-flight, empty if none.
+        network: Country, city and network owner the last successful pre-flight saw
+            (keys `country`, `city`, `owner`); never an IP address.
+        cookie_count: How many cookies the browser held at the end of the last run (a count only), None if unknown.
+        preflight_visits: The visit counter when the last successful pre-flight passed.
+        preflight_binding: The admission to open real sites: a hash (sha256 hex) of the profile and the proxy
+            configuration the last successful pre-flight was made for; empty when there is no admission (never
+            passed, revoked by a failed check). `last_preflight`, `network` and `cookie_count` are the baseline
+            and stay when the admission is revoked.
     """
 
     name: str
@@ -167,6 +179,11 @@ class ProfileData:
     timezone: str = ""
     last_exit: dict[str, str] = field(default_factory=dict)
     last_navigation: dict[str, float] = field(default_factory=dict)
+    last_preflight: str = ""
+    network: dict[str, str] = field(default_factory=dict)
+    cookie_count: int | None = None
+    preflight_visits: int = 0
+    preflight_binding: str = ""
 
     def to_json(self) -> str:
         """Serialize to JSON text."""
@@ -190,6 +207,13 @@ class ProfileData:
         navigation = raw.get("last_navigation", {})
         if not isinstance(navigation, dict) or not all(isinstance(v, (int, float)) for v in navigation.values()):
             raise ValueError("bad last_navigation")
+        cookie_count = raw.get("cookie_count")
+        if cookie_count is not None and (not isinstance(cookie_count, int) or isinstance(cookie_count, bool) or cookie_count < 0):
+            raise ValueError("bad cookie_count")
+        preflight_visits = raw.get("preflight_visits", 0)
+        if not isinstance(preflight_visits, int) or isinstance(preflight_visits, bool) or preflight_visits < 0:
+            raise ValueError("bad preflight_visits")
+        binding = raw.get("preflight_binding", "")
         return cls(
             name=name,
             created=created,
@@ -202,6 +226,11 @@ class ProfileData:
             timezone=str(raw.get("timezone", "")),
             last_exit={str(k): str(v) for k, v in dict(raw.get("last_exit", {})).items()},
             last_navigation={str(k): float(v) for k, v in navigation.items()},
+            last_preflight=str(raw.get("last_preflight", "")),
+            network={str(k): str(v) for k, v in dict(raw.get("network", {})).items()},
+            cookie_count=cookie_count,
+            preflight_visits=preflight_visits,
+            preflight_binding=binding if isinstance(binding, str) and _BINDING.fullmatch(binding) else "",
         )
 
 
@@ -247,6 +276,66 @@ class Profile:
         self.data.last_used = _utc_now()
         self.save()
 
+    def record_preflight(self, network: dict[str, str], cookie_count: int | None, binding: str = "") -> None:
+        """Remember that the pre-flight passed now, and what network and cookie count it saw.
+
+        Args:
+            network: Country, city and owner (keys `country`, `city`, `owner`), already cleaned; empty values are kept
+                as they were before so that an unknown value never erases a known one.
+            cookie_count: How many cookies the browser held, or None if unknown.
+            binding: The hash of the profile and proxy configuration the check was made for (admits the real visit).
+        """
+        self.data.preflight_binding = binding
+        merged = dict(self.data.network)
+        merged.update({key: value for key, value in network.items() if value})
+        self.data.network = merged
+        if cookie_count is not None:
+            self.data.cookie_count = cookie_count
+        self.data.last_preflight = _utc_now()
+        self.data.preflight_visits = self.data.visits
+        self.save()
+
+    def revoke_preflight(self) -> None:
+        """Take the admission back; the recorded address and cookie count stay as the baseline for the next check."""
+        if self.data.preflight_binding:
+            self.data.preflight_binding = ""
+            self.save()
+
+    def admits(self, max_age_h: float, binding: str, now: datetime | None = None) -> bool:
+        """True when this profile is admitted to a real site: a fresh pre-flight made for exactly this binding.
+
+        Args:
+            max_age_h: Longest accepted age of the pre-flight, hours.
+            binding: The hash of the profile and the proxy configuration about to be used (never empty for a real check).
+            now: Current time (replaceable in tests).
+        """
+        return bool(binding) and self.data.preflight_binding == binding and self.preflight_is_fresh(max_age_h, now)
+
+    def note_cookie_count(self, cookie_count: int) -> None:
+        """Remember how many cookies the browser held at the end of a run (a count only)."""
+        if cookie_count != self.data.cookie_count:
+            self.data.cookie_count = cookie_count
+            self.save()
+
+    def preflight_is_fresh(self, max_age_h: float, now: datetime | None = None) -> bool:
+        """True when a successful pre-flight is recorded and is at most `max_age_h` hours old.
+
+        Args:
+            max_age_h: Longest accepted age, hours.
+            now: Current time (replaceable in tests).
+
+        Returns:
+            False when there is none, its time cannot be read, or it lies in the future.
+        """
+        try:
+            done = datetime.fromisoformat(self.data.last_preflight)
+        except ValueError:
+            return False
+        if done.tzinfo is None:
+            return False
+        age_h = ((now or datetime.now(timezone.utc)) - done).total_seconds() / 3600
+        return 0 <= age_h <= max_age_h
+
     def note_timezone(self, timezone_name: str) -> None:
         """Remember the time zone the browser showed; log when it differs from the last run.
 
@@ -278,6 +367,8 @@ class Profile:
             "locale": d.locale,
             "timezone": d.timezone,
             "last_exit": {key: clean_place(value) for key, value in d.last_exit.items()},
+            "last_preflight": d.last_preflight,
+            "network": {key: value if redact(value, ()) == value else "" for key, value in d.network.items() if key in ("country", "city", "owner")},
         }
 
 

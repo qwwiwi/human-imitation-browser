@@ -354,15 +354,15 @@ curl -x http://100.101.102.103:8888 https://api.ipify.org
 python scripts/check_proxy.py
 ```
 
-Проверка должна пройти и показать домашний адрес. Для адреса `socks5://` эта команда выход не проверяет и так и пишет: проверьте через браузер командой `python scripts/open_page.py https://ipinfo.io/json --profile default`.
+Проверка должна пройти и показать домашний адрес. Для адреса `socks5://` эта команда выход не проверяет и так и пишет: проверьте через браузер командой `python scripts/preflight.py --profile default`.
 
-Команда открывает тестовую страницу в браузере агента.
+Команда открывает нейтральную страницу проверки адреса в браузере агента, с его профилем и через этот прокси. Это же «проверка перед заходом»: подробности – в [docs/check-address.md](check-address.md).
 
 ```bash
-python scripts/open_page.py https://example.com --profile default
+python scripts/preflight.py --profile default
 ```
 
-Страница должна открыться без ошибки прокси.
+Страница должна открыться без ошибки прокси, а в ответе `proxy_works` должно быть `true`.
 
 ## Если что-то не работает
 

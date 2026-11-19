@@ -1,10 +1,12 @@
 """Settings from the environment and an optional `.env` file."""
 
 import logging
+import math
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from hib.errors import ConfigError
 from hib.pace import DEFAULT_MIN_GAP_S, parse_min_gap
@@ -14,6 +16,69 @@ logger = logging.getLogger(__name__)
 # Repository root: scripts/hib/env.py -> parents[2].
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = REPO_ROOT / ".env"
+DEFAULT_PREFLIGHT_MAX_AGE_H = 12.0
+
+# The only hosts `--ephemeral` (a brand-new visitor without a profile) may open: neutral check pages, no real site.
+# These are the hosts the docs and tests of this repository use (a page of example.com, the address-check page of
+# ipinfo.io and the reputation service ip-api.com). HIB_EPHEMERAL_HOSTS adds more, for tests only.
+NEUTRAL_HOSTS: tuple[str, ...] = ("example.com", "ipinfo.io", "ip-api.com")
+
+
+def parse_ephemeral_hosts(value: str | None) -> tuple[str, ...]:
+    """Read the extra hosts allowed for `--ephemeral` (env HIB_EPHEMERAL_HOSTS, comma-separated, for tests).
+
+    Args:
+        value: Text from the environment, or None.
+
+    Returns:
+        Lower-case host names; empty items are skipped.
+    """
+    return tuple(item.strip().lower() for item in (value or "").split(",") if item.strip())
+
+
+def require_neutral_urls(urls: Iterable[str], extra_hosts: Iterable[str] = ()) -> None:
+    """Refuse a run without a profile that would open anything but a neutral check page.
+
+    A host is neutral when it is one of NEUTRAL_HOSTS or in `extra_hosts` (or a subdomain of one of them).
+
+    Args:
+        urls: The addresses given to `--ephemeral`.
+        extra_hosts: Hosts added by HIB_EPHEMERAL_HOSTS.
+
+    Raises:
+        ConfigError: At least one address is not on a neutral host.
+    """
+    allowed = (*NEUTRAL_HOSTS, *extra_hosts)
+    for url in urls:
+        host = (urlsplit(url).hostname or "").lower().rstrip(".")
+        if not any(host == name or host.endswith(f".{name}") for name in allowed):
+            raise ConfigError(
+                f"--ephemeral is only for neutral check pages ({', '.join(NEUTRAL_HOSTS)}); {host or 'this address'} is not one. "
+                "A real site is opened with a named profile (--profile NAME) that has a pre-flight check"
+            )
+
+
+def parse_preflight_max_age(value: str | None) -> float:
+    """Read how many hours a pre-flight check stays valid (env HIB_PREFLIGHT_MAX_AGE_H).
+
+    Args:
+        value: Text from the environment, or None for the default (12 hours).
+
+    Returns:
+        Hours.
+
+    Raises:
+        ConfigError: The text is not a finite non-negative number.
+    """
+    if value is None or not value.strip():
+        return DEFAULT_PREFLIGHT_MAX_AGE_H
+    try:
+        hours = float(value)
+    except ValueError:
+        raise ConfigError("HIB_PREFLIGHT_MAX_AGE_H must be a number of hours") from None
+    if not math.isfinite(hours) or hours < 0:
+        raise ConfigError("HIB_PREFLIGHT_MAX_AGE_H must be a number of hours, zero or more")
+    return hours
 
 
 @dataclass(frozen=True)
@@ -28,6 +93,10 @@ class Settings:
         proxy_city: Wanted proxy city (HIB_PROXY_CITY), or None.
         proxy_id: Provider's proxy id (HIB_PROXY_ID), or None to take it from the account.
         min_gap_s: Minimal seconds between navigations to one host (HIB_MIN_GAP_S).
+        check_url: Address-check page for the pre-flight (HIB_CHECK_URL), or None for the default.
+        preflight_max_age_h: Hours a successful pre-flight stays valid (HIB_PREFLIGHT_MAX_AGE_H).
+        reputation_url: Page with the hosting/proxy/mobile flags for the pre-flight (HIB_REPUTATION_URL), or None for the default.
+        ephemeral_hosts: Extra hosts `--ephemeral` may open (HIB_EPHEMERAL_HOSTS, for tests).
     """
 
     mobileproxy_token: str | None
@@ -37,6 +106,10 @@ class Settings:
     proxy_city: str | None = None
     proxy_id: str | None = None
     min_gap_s: float = DEFAULT_MIN_GAP_S
+    check_url: str | None = None
+    preflight_max_age_h: float = DEFAULT_PREFLIGHT_MAX_AGE_H
+    reputation_url: str | None = None
+    ephemeral_hosts: tuple[str, ...] = ()
 
     def __repr__(self) -> str:
         """Never show secret values."""
@@ -106,4 +179,8 @@ def load_settings(env_file: Path = DEFAULT_ENV_FILE, environ: Mapping[str, str] 
         proxy_city=pick("HIB_PROXY_CITY"),
         proxy_id=pick("HIB_PROXY_ID"),
         min_gap_s=parse_min_gap(pick("HIB_MIN_GAP_S")),
+        check_url=pick("HIB_CHECK_URL"),
+        preflight_max_age_h=parse_preflight_max_age(pick("HIB_PREFLIGHT_MAX_AGE_H")),
+        reputation_url=pick("HIB_REPUTATION_URL"),
+        ephemeral_hosts=parse_ephemeral_hosts(pick("HIB_EPHEMERAL_HOSTS")),
     )

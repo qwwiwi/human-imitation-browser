@@ -17,7 +17,7 @@ The project lives in `~/human-imitation-browser` (if the person installed it els
 - **Never delete or recreate a profile to get past a challenge or a block.** A new empty profile is a new stranger and makes it worse.
 - **One profile per owner and task.** Never create several profiles for one site to look like different people. There is no tool for creating profiles in bulk or rotating between them, and you must not make one by hand.
 - After a person has passed a check in the profile, keep using that profile.
-- `--ephemeral` (a throw-away browser, a new visitor every time) is only for a neutral test page such as https://example.com. Never use it for a real site.
+- `--ephemeral` (a throw-away browser, a new visitor every time) is only for a neutral check page: example.com, ipinfo.io or ip-api.com. Any other address with it is refused with exit 4. Never use it for a real site.
 
 Why: a site remembers a returning browser (cookies, cache, history, the same fingerprint and the same proxy exit). A fresh browser on every visit is what triggered a check in our own test: the sixth visit of the day to Ozon, each with a new browser, got a slider captcha.
 
@@ -36,6 +36,23 @@ This tool lets you use an ordinary browser on the owner's behalf, the way they w
 - **Never enter payment details** (card number, security code, confirmation codes) yourself unless the owner has explicitly set that up.
 - No reviews, ratings, messages or any other activity meant to influence the site; one account and one profile per owner.
 - For the owner's own seller cabinet, suggest the marketplace's official seller API instead of the browser.
+
+## Pre-flight (mandatory)
+
+**Before the first real site in a session run the pre-flight for the profile. If it fails, stop and tell the owner what changed. Do not switch to another profile or proxy to get around it.**
+
+```bash
+.venv/bin/python scripts/preflight.py --profile my-shop
+```
+
+- It opens a neutral address-check page in the same profile and through the same proxy the real visit will use, never a real site, and prints one JSON line: `ok`, `proxy_works`, `country`, `city`, `network_owner`, `hosting`, `proxy_flag`, `mobile` (true, false or null when unknown; `mobile` true means a mobile operator's address and never fails the check), `address_changed`, `profile_memory` (`new`, `ok` or `empty`), `problems`, `problems_soft`, `screenshot`. It never prints an IP address, cookie names or values.
+- Exit 0: go on. Exit 12: stop (the address changed since the profile's last pre-flight, the memory of a used profile is empty, or with `--strict` the address is flagged as hosting or proxy). Tell the owner the `problems` and, for a change, `address_change` (old and new country, city, owner). A proxy failure keeps its own code (5, 6). If the check page itself shows a refusal or a challenge, the pre-flight stops with exit 3 and is not tried again: show it to the owner.
+- `problems_soft` (for example a hosting flag) is a warning: tell the owner, and go on unless the owner said `--strict`.
+- `open_page.py` refuses a real address with exit 4 when the profile has no successful pre-flight in the last 12 hours (`HIB_PREFLIGHT_MAX_AGE_H`). Run the pre-flight; do not edit the settings or the profile to silence the refusal. The record belongs to one profile and one proxy configuration (a hash, no login is stored): after the proxy settings change, or after any pre-flight that did not pass, it no longer admits until a pre-flight passes again. With a provider session it is valid for at most 2 hours.
+- Never use `--accept-address-change` yourself: only the owner decides that a new address is the profile's normal one.
+- A clean pre-flight does not promise that a site will not show a check. A check on a site is passed by a person (captcha rule below); a refusal is a stop.
+
+Why: sites judge the address before the browser, and a profile whose address or memory silently changed is a different visitor. Details for the owner: `docs/check-address.md`.
 
 ## When to use
 
@@ -75,7 +92,7 @@ Profile commands:
 .venv/bin/python scripts/profiles.py show my-shop
 ```
 
-To check the proxy without a browser: `.venv/bin/python scripts/check_proxy.py` (prints country, city, provider and `traffic_left_mb`).
+To check the proxy without a browser: `.venv/bin/python scripts/check_proxy.py` (prints country, city, provider, the address reputation and `traffic_left_mb`).
 
 ## Output
 
@@ -87,7 +104,7 @@ stdout carries one JSON line per page:
 
 On an error, one line `{"error": "...", "exit_code": N}`. Diagnostics go to stderr. `screenshot` is empty if the screenshot could not be taken. `visits` is how many runs this profile has made.
 
-For a `socks5://` proxy `check_proxy.py` cannot check the exit address: it prints `{"source", "checked": false, "note"}`; use `open_page.py https://ipinfo.io/json --profile <name>` instead. Otherwise `check_proxy.py` prints `{"source", "country", "city", "org", "ru", "traffic_left_mb"}`; if `ru` is false, tell the person the exit address is not in Russia.
+For a `socks5://` proxy `check_proxy.py` cannot check the exit address: it prints `{"source", "checked": false, "note"}`; use `scripts/preflight.py --profile <name>` instead. Otherwise `check_proxy.py` prints `{"source", "country", "city", "org", "network_owner", "ru", "traffic_left_mb", "hosting", "proxy_flag", "mobile"}`; if `ru` is false, tell the person the exit address is not in Russia. `hosting`, `proxy_flag` and `mobile` are a third-party reputation service's opinion (`null` when it did not answer) and can be wrong.
 
 Judge the result by the screenshot and `challenge`, not by `status` alone: some sites answer 403 and still render the full page.
 
@@ -99,7 +116,7 @@ Judge the result by the screenshot and `challenge`, not by `status` alone: some 
 | 1 | unexpected error | report the `error` text to the person |
 | 2 | wrong arguments | fix the command |
 | 3 | challenge / captcha page, or an explicit access-denied page | follow the captcha rule below |
-| 4 | no token or bad `HIB_PROXY_URL` | ask the person to fill in `.env` themselves |
+| 4 | no token or bad `HIB_PROXY_URL`, or no recent pre-flight for the profile | ask the person to fill in `.env` themselves; for a missing pre-flight run the command named in `error` |
 | 5 | proxy provider API error | tell the person: check token, balance, package |
 | 6 | proxy unreachable or rejected the login | tell the person: check package and traffic left |
 | 7 | page load timeout | you may retry once later, after a pause of a few minutes |
@@ -107,6 +124,7 @@ Judge the result by the screenshot and `challenge`, not by `status` alone: some 
 | 9 | the site answered a server error (5xx) | not a block and not a captcha: wait a few minutes, retry once, then report |
 | 10 | the profile is in use by another run | wait until that run ends, then retry once; never start a second run on the same profile, never work around the lock |
 | 11 | profile problem (missing, damaged, cannot be created) | report the `error` text; do not delete or recreate the profile yourself, ask the person |
+| 12 | pre-flight failed (`preflight.py` only) | stop; tell the owner `problems` and `address_change`; do not switch profile or proxy |
 
 ## Captcha rule (mandatory)
 

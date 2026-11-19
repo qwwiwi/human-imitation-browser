@@ -9,6 +9,9 @@ Prints one JSON line per page to stdout:
     {"url", "status", "title", "text_chars", "screenshot", "challenge", "reason", "profile", "visits"}
 On an error prints one JSON line {"error", "exit_code"} instead
 (a malformed HIB_PROXY_URL is exit 4, an HTTP 5xx answer is exit 9, a profile in use is exit 10).
+A profile without a successful `scripts/preflight.py` in the last 12 hours (HIB_PREFLIGHT_MAX_AGE_H) is refused
+with exit 4 before any proxy call or browser start. `--ephemeral` (no profile) is only for neutral check pages
+(example.com, ipinfo.io, ip-api.com); any other address with it is exit 4.
 Diagnostics go to stderr. Exit codes are listed in hib/errors.py and README.md.
 
 Example:
@@ -21,12 +24,13 @@ import logging
 import sys
 from pathlib import Path
 
-from hib.env import DEFAULT_ENV_FILE, REPO_ROOT, Settings, load_settings
+from hib.env import DEFAULT_ENV_FILE, REPO_ROOT, load_settings, require_neutral_urls
 from hib.errors import EXIT_CHALLENGE, EXIT_OK, EXIT_UNEXPECTED, ConfigError, HibError, ProfileError
 from hib.pace import Pacer
+from hib.preflight import require_fresh_preflight
 from hib.profiles import DEFAULT_PROFILE, ProfileStore, profiles_root, validate_profile_name
-from hib.proxy import ProxyConfig, proxy_from_url, redact, resolve_proxy, warn_if_open_proxy
-from hib.session import resolve_session_proxy
+from hib.proxy import ProxyConfig, redact, resolve_proxy, warn_if_open_proxy
+from hib.session import STICKY_MINUTES, fixed_proxy_from_settings, resolve_session_proxy
 
 logger = logging.getLogger("open_page")
 
@@ -92,28 +96,6 @@ def emit_json(data: dict[str, object]) -> None:
     sys.stdout.flush()
 
 
-def _check_proxy_settings(settings: Settings, no_proxy: bool) -> ProxyConfig | None:
-    """Check the proxy settings before any profile is touched.
-
-    Args:
-        settings: Loaded settings.
-        no_proxy: True for `--no-proxy`.
-
-    Returns:
-        The proxy from HIB_PROXY_URL (used as it is), or None when the provider API is used or no proxy is wanted.
-
-    Raises:
-        ConfigError: No proxy is configured, or HIB_PROXY_URL is malformed.
-    """
-    if no_proxy:
-        return None
-    if settings.proxy_url:
-        return proxy_from_url(settings.proxy_url)
-    if not settings.mobileproxy_token:
-        raise ConfigError("no proxy configured: put MOBILEPROXY_API_TOKEN (or HIB_PROXY_URL) into the .env file")
-    return None
-
-
 def main(argv: list[str]) -> int:
     """Run the command.
 
@@ -129,6 +111,8 @@ def main(argv: list[str]) -> int:
     try:
         settings = load_settings(args.env_file)
         secrets.extend(s for s in (settings.mobileproxy_token,) if s)
+        if args.ephemeral:
+            require_neutral_urls(args.urls, settings.ephemeral_hosts)  # before any proxy call or browser start
         # Imported here so that a broken browser install still gives a clean JSON error.
         from hib import browser
 
@@ -138,7 +122,7 @@ def main(argv: list[str]) -> int:
             block_images=args.no_images,
             pause_between_s=(args.pause_min, args.pause_max),
         )
-        fixed_proxy = _check_proxy_settings(settings, args.no_proxy)
+        fixed_proxy = fixed_proxy_from_settings(settings, args.no_proxy)
         if fixed_proxy:
             secrets.extend(fixed_proxy.secrets())
             warn_if_open_proxy(fixed_proxy)
@@ -159,9 +143,13 @@ def main(argv: list[str]) -> int:
         else:
             store = ProfileStore(profiles_root(settings.profiles_dir))
             with store.acquire(args.profile or DEFAULT_PROFILE, browser.make_fingerprint) as profile:
+                # Before any proxy call or browser start: a real address needs a recent pre-flight check
+                # (the cheap part; the part bound to the proxy configuration follows once the proxy is known).
+                require_fresh_preflight(profile, settings.preflight_max_age_h)
                 if fixed_proxy:
                     logger.info("using the proxy from HIB_PROXY_URL as it is (choose a sticky session at your provider)")
                     proxy = fixed_proxy
+                    require_fresh_preflight(profile, settings.preflight_max_age_h, proxy)
                 else:
                     if not settings.mobileproxy_token:  # cannot happen: checked in _check_proxy_settings
                         raise ConfigError("no proxy configured")
@@ -175,6 +163,8 @@ def main(argv: list[str]) -> int:
                     )
                     proxy = session.proxy
                     secrets.extend(proxy.secrets())
+                    # The provider's sticky session lasts STICKY_MINUTES (an upper bound: it may have begun before the check).
+                    require_fresh_preflight(profile, min(settings.preflight_max_age_h, STICKY_MINUTES / 60), proxy)
                     profile.data.last_exit = {"country": session.country, "city": session.city}
                 pacer = Pacer(profile.data.last_navigation, settings.min_gap_s, on_change=profile.save)
                 stopped = browser.open_pages(

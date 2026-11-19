@@ -13,6 +13,7 @@ import pytest
 
 import check_proxy
 import open_page
+from conftest import preflight_for_args
 from hib import browser, proxy, session
 from hib.browser import PageResult
 from hib.errors import ConfigError, ProxyApiError
@@ -111,7 +112,7 @@ def test_https_proxy_url_is_still_refused() -> None:
 def test_redaction_does_not_break_without_credentials() -> None:
     config = proxy_from_url("socks5://127.0.0.1:18931")
     assert config.secrets() == []
-    assert redact("cannot connect to 127.0.0.1:18931", config.secrets()) == "cannot connect to 127.0.0.1:18931"
+    assert redact("cannot connect to proxy.example.test:18931", config.secrets()) == "cannot connect to proxy.example.test:18931"  # an address literal is stripped by H2, a host name is not
 
 
 def test_redaction_still_hides_credentials_when_present() -> None:
@@ -186,7 +187,9 @@ def recorder(monkeypatch: pytest.MonkeyPatch) -> Recorder:
     return rec
 
 
-def _open(tmp_path: Path, *args: str) -> int:
+def _open(tmp_path: Path, *args: str, preflighted: bool = True) -> int:
+    if preflighted:
+        preflight_for_args(args)  # the tool refuses a profile without a recent pre-flight
     return open_page.main(["--env-file", str(tmp_path / "missing.env"), *args, URL])
 
 
@@ -289,6 +292,7 @@ def test_check_proxy_script_with_a_plain_http_proxy_url(
 
     monkeypatch.setenv("HIB_PROXY_URL", "http://100.101.102.103:8888")
     monkeypatch.setattr(check_proxy, "check_exit_ip", fake_check)
+    monkeypatch.setattr(check_proxy, "check_reputation", lambda proxy, url="": {"hosting": None, "proxy": None})
     assert check_proxy.main(["--env-file", str(tmp_path / "missing.env")]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["source"] == "HIB_PROXY_URL" and out["ru"] is True
@@ -308,7 +312,7 @@ def test_check_proxy_script_says_plainly_that_socks_cannot_be_checked_here(
         assert check_proxy.main(["--env-file", str(tmp_path / "missing.env")]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["checked"] is False
-    assert "open_page.py https://ipinfo.io/json --profile" in out["note"]
+    assert "scripts/preflight.py --profile <name>" in out["note"]  # open_page.py now needs a pre-flight first
     assert "SOCKS" in out["note"]
     assert "ru" not in out
 
