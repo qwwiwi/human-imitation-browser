@@ -17,7 +17,7 @@ The project lives in `~/human-imitation-browser` (if the person installed it els
 - **Never delete or recreate a profile to get past a challenge or a block.** A new empty profile is a new stranger and makes it worse.
 - **One profile per owner and task.** Never create several profiles for one site to look like different people. There is no tool for creating profiles in bulk or rotating between them, and you must not make one by hand.
 - After a person has passed a check in the profile, keep using that profile.
-- `--ephemeral` (a throw-away browser, a new visitor every time) is only for a neutral test page such as https://example.com. Never use it for a real site.
+- `--ephemeral` (a throw-away browser, a new visitor every time) is only for a neutral check page: example.com, ipinfo.io or ip-api.com. Any other address with it is refused with exit 4. Never use it for a real site.
 
 Why: a site remembers a returning browser (cookies, cache, history, the same fingerprint and the same proxy exit). A fresh browser on every visit is what triggered a check in our own test: the sixth visit of the day to Ozon, each with a new browser, got a slider captcha.
 
@@ -46,9 +46,9 @@ This tool lets you use an ordinary browser on the owner's behalf, the way they w
 ```
 
 - It opens a neutral address-check page in the same profile and through the same proxy the real visit will use, never a real site, and prints one JSON line: `ok`, `proxy_works`, `country`, `city`, `network_owner`, `hosting`, `proxy_flag`, `mobile` (true, false or null when unknown; `mobile` true means a mobile operator's address and never fails the check), `address_changed`, `profile_memory` (`new`, `ok` or `empty`), `problems`, `problems_soft`, `screenshot`. It never prints an IP address, cookie names or values.
-- Exit 0: go on. Exit 12: stop (the address changed since the profile's last pre-flight, the memory of a used profile is empty, or with `--strict` the address is flagged as hosting or proxy). Tell the owner the `problems` and, for a change, `address_change` (old and new country, city, owner). A proxy failure keeps its own code (5, 6).
+- Exit 0: go on. Exit 12: stop (the address changed since the profile's last pre-flight, the memory of a used profile is empty, or with `--strict` the address is flagged as hosting or proxy). Tell the owner the `problems` and, for a change, `address_change` (old and new country, city, owner). A proxy failure keeps its own code (5, 6). If the check page itself shows a refusal or a challenge, the pre-flight stops with exit 3 and is not tried again: show it to the owner.
 - `problems_soft` (for example a hosting flag) is a warning: tell the owner, and go on unless the owner said `--strict`.
-- `open_page.py` refuses a real address with exit 4 when the profile has no successful pre-flight in the last 12 hours (`HIB_PREFLIGHT_MAX_AGE_H`). Run the pre-flight; do not edit the settings or the profile to silence the refusal.
+- `open_page.py` refuses a real address with exit 4 when the profile has no successful pre-flight in the last 12 hours (`HIB_PREFLIGHT_MAX_AGE_H`). Run the pre-flight; do not edit the settings or the profile to silence the refusal. The record belongs to one profile and one proxy configuration (a hash, no login is stored): after the proxy settings change, or after any pre-flight that did not pass, it no longer admits until a pre-flight passes again. With a provider session it is valid for at most 2 hours.
 - Never use `--accept-address-change` yourself: only the owner decides that a new address is the profile's normal one.
 - A clean pre-flight does not promise that a site will not show a check. A check on a site is passed by a person (captcha rule below); a refusal is a stop.
 
