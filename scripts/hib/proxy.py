@@ -10,6 +10,8 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from email.message import Message
+from typing import IO
 from urllib.parse import quote, unquote, urlsplit
 
 from hib.errors import ConfigError, ProxyApiError, ProxyUnreachableError
@@ -139,18 +141,50 @@ def proxy_from_url(url: str) -> ProxyConfig:
         The proxy settings.
 
     Raises:
-        ConfigError: The URL is not an http(s) proxy URL with host, port, login and password.
+        ConfigError: The URL is not an http proxy URL with host, port, login and password.
+            An https:// proxy URL is refused: both adapters speak plain http to the
+            proxy, so accepting it would silently send the login unencrypted.
     """
-    parts = urlsplit(url.strip())
-    if parts.scheme not in ("http", "https"):
-        raise ConfigError("HIB_PROXY_URL must look like http://login:password@host:port")
     try:
+        parts = urlsplit(url.strip())
         port = parts.port
-    except ValueError as exc:
-        raise ConfigError("HIB_PROXY_URL has an invalid port") from exc
+    except ValueError:
+        # Raised for an unclosed bracket or a bad port; the message may echo the URL, so it is dropped.
+        raise ConfigError("HIB_PROXY_URL is malformed: check the brackets and the port") from None
+    if parts.scheme == "https":
+        raise ConfigError("HIB_PROXY_URL must start with http://: https:// proxies are not supported")
+    if parts.scheme != "http":
+        raise ConfigError("HIB_PROXY_URL must look like http://login:password@host:port")
     if not parts.hostname or not port or parts.username is None or parts.password is None:
         raise ConfigError("HIB_PROXY_URL must look like http://login:password@host:port")
     return ProxyConfig(host=parts.hostname, port=port, username=unquote(parts.username), password=unquote(parts.password))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect so the Bearer token is never sent to another address."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: Message,
+        newurl: str,
+    ) -> None:
+        """Return None: urllib then raises HTTPError for the 3xx answer."""
+        return None
+
+
+def _check_token(token: str) -> None:
+    """Refuse a token that cannot be a header value (spaces, line breaks, non-ASCII).
+
+    Raises:
+        ConfigError: The token is not printable ASCII without spaces. The message
+            never contains the token.
+    """
+    if not token or not token.isascii() or not token.isprintable() or any(ch.isspace() for ch in token):
+        raise ConfigError("MOBILEPROXY_API_TOKEN has characters that are not allowed (spaces, line breaks): re-copy it")
 
 
 def call_mobileproxy(command: str, token: str) -> object:
@@ -164,15 +198,17 @@ def call_mobileproxy(command: str, token: str) -> object:
         Decoded JSON answer.
 
     Raises:
-        ProxyApiError: Network error, HTTP error or a non-JSON answer.
+        ConfigError: The token has characters that cannot be sent in a header.
+        ProxyApiError: Network error, HTTP error (a redirect counts as one) or a non-JSON answer.
     """
+    _check_token(token)
     req = urllib.request.Request(
         f"{MOBILEPROXY_API}?command={quote(command)}",
         headers={"Authorization": f"Bearer {token}"},
     )
     logger.info("asking the proxy API: %s", command)
     try:
-        with urllib.request.urlopen(req, timeout=API_TIMEOUT_S) as resp:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=API_TIMEOUT_S) as resp:
             body = resp.read()
     except urllib.error.HTTPError as exc:
         hint = " (check MOBILEPROXY_API_TOKEN)" if exc.code in (401, 403) else ""
@@ -221,8 +257,16 @@ def check_exit_ip(proxy: ProxyConfig, url: str = "https://ipinfo.io/json") -> di
         Mapping with the keys `country`, `city`, `org` (empty strings when absent).
 
     Raises:
-        ProxyUnreachableError: The proxy refused, failed the login or timed out.
+        ProxyUnreachableError: The proxy refused, failed the login or timed out, or
+            the NO_PROXY setting would make the request skip the proxy (the check
+            would then report this server's own address).
     """
+    host = urlsplit(url).hostname or ""
+    if urllib.request.proxy_bypass(host):
+        raise ProxyUnreachableError(
+            f"NO_PROXY / no_proxy in the environment excludes {host}: the check would not use the proxy; "
+            "remove that entry and run it again"
+        )
     proxy_url = proxy.as_url()
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
     try:

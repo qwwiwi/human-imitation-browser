@@ -3,7 +3,8 @@
 
 Prints one JSON line per page to stdout:
     {"url", "status", "title", "text_chars", "screenshot", "challenge", "reason"}
-On an error prints one JSON line {"error", "exit_code"} instead.
+On an error prints one JSON line {"error", "exit_code"} instead
+(a malformed HIB_PROXY_URL is exit 4, an HTTP 5xx answer is exit 9).
 Diagnostics go to stderr. Exit codes are listed in hib/errors.py and README.md.
 
 Example:

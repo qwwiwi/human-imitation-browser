@@ -10,6 +10,7 @@ Exit codes (also documented in README and skill/SKILL.md):
     6  proxy unreachable or rejected the login
     7  page load timeout
     8  browser failed to start
+    9  the site answered a server error (HTTP 5xx) and the page is not a challenge page
 """
 
 EXIT_OK = 0
@@ -51,3 +52,9 @@ class BrowserStartError(HibError):
     """Camoufox could not start (missing system libraries, no browser files)."""
 
     exit_code = 8
+
+
+class PageServerError(HibError):
+    """The site answered with a server error (HTTP 5xx) and the page is not a challenge page."""
+
+    exit_code = 9

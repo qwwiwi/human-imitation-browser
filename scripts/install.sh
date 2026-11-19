@@ -9,7 +9,7 @@
 #   1. installs python3-venv and Xvfb with apt (needs sudo rights);
 #   2. creates the .venv folder and installs camoufox[geoip] into it;
 #   3. downloads the Camoufox browser files;
-#   4. installs the browser's system libraries (GTK 3 and others) as Playwright documents;
+#   4. installs the browser's system libraries (GTK 3 and others) with apt, from an explicit package list;
 #   5. creates .env from .env.example if there is none.
 # Without sudo rights it prints the exact commands to run instead.
 set -euo pipefail
@@ -56,6 +56,20 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' \
 [[ -f "${REQ_FILE}" ]] || fail "requirements.txt not found in ${REPO_DIR}"
 
 APT_PACKAGES=(python3-venv xvfb)
+# System libraries of Firefox / Camoufox, following the list Playwright documents for Firefox
+# on Ubuntu. UNVERIFIED: written from memory of that list, not tested on a clean machine.
+# On Ubuntu 24.04 some of these have a "t64" twin (libgtk-3-0t64); browser_package picks it.
+BROWSER_LIBS=(
+  libasound2 libatk1.0-0 libcairo-gobject2 libcairo2 libdbus-glib-1-2 libfontconfig1 libfreetype6
+  libgdk-pixbuf-2.0-0 libglib2.0-0 libgtk-3-0 libpango-1.0-0 libpangocairo-1.0-0 libx11-6 libx11-xcb1
+  libxcb-shm0 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2
+  libxrender1 libxtst6 fonts-liberation
+)
+
+# Print the t64 name of a package when this system has it, otherwise the plain name.
+browser_package() {
+  if apt-cache show "$1t64" >/dev/null 2>&1; then echo "$1t64"; else echo "$1"; fi
+}
 if [[ "${CAN_ROOT}" -eq 1 ]]; then
   if command -v apt-get >/dev/null 2>&1; then
     log "installing with apt: ${APT_PACKAGES[*]}"
@@ -89,13 +103,26 @@ log "step 3/5: downloading the Camoufox browser (a large download, takes a while
 "${VENV_PY}" -m camoufox fetch
 
 log "step 4/5: system libraries for the browser"
-if [[ "${CAN_ROOT}" -eq 1 ]] && command -v apt-get >/dev/null 2>&1; then
-  ${SUDO} "${VENV_PY}" -m playwright install-deps firefox
+# Administrator rights are used only for apt-get with a fixed package list; the Python
+# from the project's own .venv (writable by the user) never runs as root.
+BROWSER_PACKAGES=()
+if command -v apt-cache >/dev/null 2>&1; then
+  for lib in "${BROWSER_LIBS[@]}"; do
+    BROWSER_PACKAGES+=("$(browser_package "${lib}")")
+  done
+fi
+if [[ "${CAN_ROOT}" -eq 1 ]] && [[ "${#BROWSER_PACKAGES[@]}" -gt 0 ]]; then
+  log "installing with apt: ${BROWSER_PACKAGES[*]}"
+  ${SUDO} apt-get install -y "${BROWSER_PACKAGES[@]}"
 elif [[ "${CAN_ROOT}" -eq 1 ]]; then
   log "apt-get not found: install the Firefox system libraries (GTK 3 and others) for your system yourself"
 else
-  log "skipping system libraries (no administrator rights or --no-system)"
-  MANUAL_STEPS+=("sudo ${VENV_PY} -m playwright install-deps firefox")
+  log "skipping system libraries (no administrator rights, --no-system or no apt)"
+  if [[ "${#BROWSER_PACKAGES[@]}" -gt 0 ]]; then
+    MANUAL_STEPS+=("sudo apt-get install -y ${BROWSER_PACKAGES[*]}")
+  else
+    MANUAL_STEPS+=("install the Firefox system libraries (GTK 3 and others) with your system's package manager")
+  fi
 fi
 if ! command -v Xvfb >/dev/null 2>&1; then
   log "warning: Xvfb (virtual screen) is not installed yet; the browser will not start without it"

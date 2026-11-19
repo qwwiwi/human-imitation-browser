@@ -67,6 +67,7 @@ Judge the result by the screenshot and `challenge`, not by `status` alone: some 
 | 6 | proxy unreachable or rejected the login | tell the person: check package and traffic left |
 | 7 | page load timeout | you may retry once later, after a pause of a few minutes |
 | 8 | browser did not start | tell the person to rerun `bash scripts/install.sh` |
+| 9 | the site answered a server error (5xx) | not a block and not a captcha: wait a few minutes, retry once, then report |
 
 ## Captcha rule (mandatory)
 

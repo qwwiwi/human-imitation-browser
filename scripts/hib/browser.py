@@ -17,7 +17,7 @@ from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from hib.challenge import detect_challenge
-from hib.errors import BrowserStartError, HibError, PageTimeoutError, ProxyUnreachableError
+from hib.errors import BrowserStartError, HibError, PageServerError, PageTimeoutError, ProxyUnreachableError
 from hib.proxy import ProxyConfig, redact
 
 logger = logging.getLogger(__name__)
@@ -120,6 +120,16 @@ def _page_text(page: Page) -> str:
         return ""
 
 
+def _read_page(page: Page) -> tuple[str, str]:
+    """Return the visible body text and the title of the page as shown now."""
+    text = _page_text(page)
+    try:
+        title = page.title()
+    except PlaywrightError:
+        title = ""
+    return text, title
+
+
 def _screenshot_path(out_dir: Path, url: str) -> Path:
     """Build a unique screenshot file name from the time and the host."""
     host = (urlsplit(url).hostname or "page").replace(":", "_")
@@ -128,7 +138,11 @@ def _screenshot_path(out_dir: Path, url: str) -> Path:
 
 
 def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> PageResult:
-    """Open one address, behave like a person, save a screenshot, check for a challenge.
+    """Open one address, check for a challenge, behave like a person, save a screenshot.
+
+    A challenge page seen right after navigation is captured as it is: the page
+    is not touched. Otherwise the human-like actions run and the page is checked
+    again. HTTP 403 and other 4xx answers are not failures when the page rendered.
 
     Args:
         page: Browser tab to use (the same tab keeps cookies between pages).
@@ -141,6 +155,7 @@ def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> 
 
     Raises:
         PageTimeoutError: The page did not load in time.
+        PageServerError: The site answered HTTP 5xx and the page is not a challenge page.
         ProxyUnreachableError: Firefox reported a proxy failure.
         HibError: Any other navigation error.
     """
@@ -154,16 +169,22 @@ def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> 
         if any(marker in message for marker in PROXY_ERROR_MARKERS):
             raise ProxyUnreachableError(f"the proxy failed: {message}") from None
         raise HibError(f"cannot open {url}: {message}") from None
-    try:
-        act_like_a_person(page)
-    except PlaywrightError as exc:
-        # For example the page redirected while scrolling; still look at what is shown now.
-        logger.warning("human-like actions interrupted: %s", redact(str(exc).splitlines()[0] if str(exc) else "", secrets))
-    text = _page_text(page)
-    try:
-        title = page.title()
-    except PlaywrightError:
-        title = ""
+    text, title = _read_page(page)
+    # Right after navigation only the named markers count: the text may still be rendering.
+    check = detect_challenge(title, text, min_chars=0)
+    if not check.is_challenge:
+        try:
+            act_like_a_person(page)
+        except PlaywrightError as exc:
+            # For example the page redirected while scrolling; still look at what is shown now.
+            logger.warning("human-like actions interrupted: %s", redact(str(exc).splitlines()[0] if str(exc) else "", secrets))
+        text, title = _read_page(page)
+        check = detect_challenge(title, text)
+    status = response.status if response else None
+    if check.is_challenge:
+        logger.warning("challenge page detected (%s): stop and show the screenshot to a person", check.reason)
+    elif status is not None and status >= 500:
+        raise PageServerError(f"the site answered HTTP {status} (a server error, not a challenge page)")
     shot = _screenshot_path(options.out_dir, page.url)
     try:
         page.screenshot(path=str(shot))
@@ -171,12 +192,9 @@ def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> 
     except PlaywrightError as exc:
         logger.warning("screenshot failed: %s", redact(str(exc).splitlines()[0] if str(exc) else "", secrets))
         shot_path = ""
-    check = detect_challenge(title, text)
-    if check.is_challenge:
-        logger.warning("challenge page detected (%s): stop and show the screenshot to a person", check.reason)
     return PageResult(
         url=page.url,
-        status=response.status if response else None,
+        status=status,
         title=title,
         text_chars=len(" ".join(text.split())),
         screenshot=shot_path,
@@ -222,8 +240,7 @@ def launch(proxy: ProxyConfig | None, options: OpenOptions) -> Iterator[Page]:
         message = redact(f"{type(exc).__name__}: {exc}".splitlines()[0], secrets)
         raise BrowserStartError(
             f"the browser did not start: {message}. Usually system libraries (GTK 3) or Xvfb are missing: "
-            "run scripts/install.sh and the commands it prints at the end, "
-            "for example: sudo .venv/bin/python -m playwright install-deps firefox"
+            "run scripts/install.sh and the apt-get command it prints at the end"
         ) from None
     try:
         yield browser.new_page()
