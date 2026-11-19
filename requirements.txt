@@ -1,0 +1,4 @@
+# Browser: Camoufox, a patched Firefox with built-in human-like cursor movement.
+# The [geoip] extra matches timezone, language and WebRTC to the proxy IP.
+# Camoufox brings Playwright (the browser control library) as its own dependency.
+camoufox[geoip]==0.5.9

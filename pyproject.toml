@@ -1,0 +1,4 @@
+# Only pytest settings live here: the scripts run without installing a package.
+[tool.pytest.ini_options]
+pythonpath = ["scripts"]
+testpaths = ["tests"]
