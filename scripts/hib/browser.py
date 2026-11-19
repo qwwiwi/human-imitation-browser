@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from camoufox.exceptions import InvalidIP, InvalidProxy
 from camoufox.sync_api import Camoufox
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page
@@ -51,7 +52,7 @@ class PageResult:
         status: HTTP status of the main document, None if unknown.
         title: Page title.
         text_chars: Length of the visible text.
-        screenshot: Path to the saved screenshot.
+        screenshot: Path to the saved screenshot, empty if it could not be taken.
         challenge: True when the page looks like a captcha / anti-bot page.
         reason: Why it was judged a challenge, empty otherwise.
     """
@@ -153,11 +154,23 @@ def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> 
         if any(marker in message for marker in PROXY_ERROR_MARKERS):
             raise ProxyUnreachableError(f"the proxy failed: {message}") from None
         raise HibError(f"cannot open {url}: {message}") from None
-    act_like_a_person(page)
+    try:
+        act_like_a_person(page)
+    except PlaywrightError as exc:
+        # For example the page redirected while scrolling; still look at what is shown now.
+        logger.warning("human-like actions interrupted: %s", redact(str(exc).splitlines()[0] if str(exc) else "", secrets))
     text = _page_text(page)
-    title = page.title()
+    try:
+        title = page.title()
+    except PlaywrightError:
+        title = ""
     shot = _screenshot_path(options.out_dir, page.url)
-    page.screenshot(path=str(shot))
+    try:
+        page.screenshot(path=str(shot))
+        shot_path = str(shot)
+    except PlaywrightError as exc:
+        logger.warning("screenshot failed: %s", redact(str(exc).splitlines()[0] if str(exc) else "", secrets))
+        shot_path = ""
     check = detect_challenge(title, text)
     if check.is_challenge:
         logger.warning("challenge page detected (%s): stop and show the screenshot to a person", check.reason)
@@ -166,7 +179,7 @@ def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> 
         status=response.status if response else None,
         title=title,
         text_chars=len(" ".join(text.split())),
-        screenshot=str(shot),
+        screenshot=shot_path,
         challenge=check.is_challenge,
         reason=check.reason,
     )
@@ -201,10 +214,16 @@ def launch(proxy: ProxyConfig | None, options: OpenOptions) -> Iterator[Page]:
     try:
         manager = Camoufox(**kwargs)
         browser = manager.__enter__()
+    except (InvalidIP, InvalidProxy) as exc:
+        # With geoip=True Camoufox first looks up the exit address through the proxy.
+        message = redact(f"{type(exc).__name__}: {exc}".splitlines()[0], secrets)
+        raise ProxyUnreachableError(f"cannot get through the proxy: {message}") from None
     except Exception as exc:  # noqa: BLE001 - any start failure means the same thing to the user
         message = redact(f"{type(exc).__name__}: {exc}".splitlines()[0], secrets)
         raise BrowserStartError(
-            f"the browser did not start: {message}. Run scripts/install.sh and read its last lines."
+            f"the browser did not start: {message}. Usually system libraries (GTK 3) or Xvfb are missing: "
+            "run scripts/install.sh and the commands it prints at the end, "
+            "for example: sudo .venv/bin/python -m playwright install-deps firefox"
         ) from None
     try:
         yield browser.new_page()

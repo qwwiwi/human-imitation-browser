@@ -65,7 +65,7 @@ if [[ "${CAN_ROOT}" -eq 1 ]]; then
     log "apt-get not found: this is not Ubuntu/Debian, install python3-venv and Xvfb yourself"
   fi
 else
-  log "no administrator rights: skipping apt"
+  log "skipping apt (no administrator rights or --no-system)"
   MANUAL_STEPS+=("sudo apt-get update && sudo apt-get install -y ${APT_PACKAGES[*]}")
 fi
 
@@ -89,10 +89,12 @@ log "step 3/5: downloading the Camoufox browser (a large download, takes a while
 "${VENV_PY}" -m camoufox fetch
 
 log "step 4/5: system libraries for the browser"
-if [[ "${CAN_ROOT}" -eq 1 ]]; then
+if [[ "${CAN_ROOT}" -eq 1 ]] && command -v apt-get >/dev/null 2>&1; then
   ${SUDO} "${VENV_PY}" -m playwright install-deps firefox
+elif [[ "${CAN_ROOT}" -eq 1 ]]; then
+  log "apt-get not found: install the Firefox system libraries (GTK 3 and others) for your system yourself"
 else
-  log "no administrator rights: skipping system libraries"
+  log "skipping system libraries (no administrator rights or --no-system)"
   MANUAL_STEPS+=("sudo ${VENV_PY} -m playwright install-deps firefox")
 fi
 if ! command -v Xvfb >/dev/null 2>&1; then

@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from hib.errors import ConfigError
+
 logger = logging.getLogger(__name__)
 
 # Repository root: scripts/hib/env.py -> parents[2].
@@ -68,11 +70,17 @@ def load_settings(env_file: Path = DEFAULT_ENV_FILE, environ: Mapping[str, str] 
 
     Returns:
         Settings with empty values turned into None.
+
+    Raises:
+        ConfigError: The settings file exists but cannot be read.
     """
     env = os.environ if environ is None else environ
     file_values: dict[str, str] = {}
     if env_file.is_file():
-        file_values = parse_env_text(env_file.read_text(encoding="utf-8"))
+        try:
+            file_values = parse_env_text(env_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ConfigError(f"cannot read the settings file {env_file}: {type(exc).__name__}") from None
         logger.debug("read settings file %s", env_file)
 
     def pick(name: str) -> str | None:

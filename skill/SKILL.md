@@ -5,7 +5,7 @@ description: Open a web page (Russian sites such as Ozon, Avito, Cian, Aviasales
 
 # human-imitation-browser
 
-A plain-files skill: this text plus one command-line script. It works from any agent that can run shell commands on the server: Claude Code, Codex, Hermes, OpenClaw-style agents and similar. No special integration.
+A plain-files skill: this text plus one command-line script. It is meant for any agent that can run shell commands on the server: Claude Code, Codex, Hermes, OpenClaw-style agents and similar. No special integration (not tested with each agent separately).
 
 The project lives in `~/human-imitation-browser` (if the person installed it elsewhere, use that path). Run every command from that folder.
 
@@ -48,7 +48,9 @@ stdout carries one JSON line per page:
 {"url": "...", "status": 200, "title": "...", "text_chars": 5120, "screenshot": "out/....png", "challenge": false, "reason": ""}
 ```
 
-On an error, one line `{"error": "...", "exit_code": N}`. Diagnostics go to stderr.
+On an error, one line `{"error": "...", "exit_code": N}`. Diagnostics go to stderr. `screenshot` is empty if the screenshot could not be taken.
+
+`check_proxy.py` prints `{"source", "country", "city", "org", "ru", "traffic_left_mb"}`; if `ru` is false, tell the person the exit address is not in Russia.
 
 Judge the result by the screenshot and `challenge`, not by `status` alone: some sites answer 403 and still render the full page.
 

@@ -89,6 +89,8 @@ def proxy_from_api_response(data: object) -> ProxyConfig:
     Raises:
         ProxyApiError: The answer has no usable proxy record.
     """
+    if isinstance(data, list) and len(data) > 1:
+        logger.warning("the account has %d proxies; using the first one in the list", len(data))
     item = _first_item(data)
     missing = [name for name in REQUIRED_FIELDS if not item.get(name)]
     if missing:

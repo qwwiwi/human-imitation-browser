@@ -70,9 +70,10 @@ def main(argv: list[str]) -> int:
     """
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
     args = parse_args(argv)
-    settings = load_settings(args.env_file)
-    secrets = [s for s in (settings.mobileproxy_token,) if s]
+    secrets: list[str] = []
     try:
+        settings = load_settings(args.env_file)
+        secrets.extend(s for s in (settings.mobileproxy_token,) if s)
         # Imported here so that a broken browser install still gives a clean JSON error.
         from hib.browser import OpenOptions, open_pages
 

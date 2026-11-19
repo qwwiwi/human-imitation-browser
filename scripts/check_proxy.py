@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Check that the proxy works: get it from the provider and look at the exit address.
 
-Prints one JSON line: {"source", "country", "city", "org", "traffic_left_mb"}.
+Prints one JSON line: {"source", "country", "city", "org", "ru", "traffic_left_mb"}.
+"ru" is true when the exit address is in Russia; the exit code stays 0 either way,
+because the proxy itself works.
 Never prints the login, the password or the token.
 
 Example:
@@ -15,7 +17,7 @@ import sys
 from pathlib import Path
 
 from hib.env import DEFAULT_ENV_FILE, load_settings
-from hib.errors import EXIT_OK, ConfigError, HibError
+from hib.errors import EXIT_OK, ConfigError, HibError, ProxyApiError
 from hib.proxy import call_mobileproxy, check_exit_ip, proxy_from_api_response, proxy_from_url, redact, traffic_left_mb
 
 logger = logging.getLogger("check_proxy")
@@ -34,9 +36,10 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Check the proxy without opening a browser.")
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE, help="settings file (default: .env)")
     args = parser.parse_args(argv)
-    settings = load_settings(args.env_file)
-    secrets = [s for s in (settings.mobileproxy_token, settings.proxy_url) if s]
+    secrets: list[str] = []
     try:
+        settings = load_settings(args.env_file)
+        secrets.extend(s for s in (settings.mobileproxy_token, settings.proxy_url) if s)
         left: float | None = None
         if settings.proxy_url:
             source = "HIB_PROXY_URL"
@@ -47,7 +50,11 @@ def main(argv: list[str]) -> int:
             proxy = proxy_from_api_response(answer)
             left = traffic_left_mb(answer)
             if left is None:
-                left = traffic_left_mb(call_mobileproxy("get_balance", settings.mobileproxy_token))
+                try:
+                    left = traffic_left_mb(call_mobileproxy("get_balance", settings.mobileproxy_token))
+                except ProxyApiError as exc:
+                    # The traffic figure is a bonus; the proxy itself may still work.
+                    logger.warning("could not read the traffic left: %s", redact(str(exc), secrets))
         else:
             raise ConfigError("no proxy configured: put MOBILEPROXY_API_TOKEN (or HIB_PROXY_URL) into the .env file")
         secrets.extend(proxy.secrets())
@@ -58,7 +65,7 @@ def main(argv: list[str]) -> int:
         logger.error("%s", message)
         sys.stdout.write(json.dumps({"error": message, "exit_code": exc.exit_code}, ensure_ascii=False) + "\n")
         return exc.exit_code
-    result = {"source": source, **info, "traffic_left_mb": left}
+    result = {"source": source, **info, "ru": info.get("country") == "RU", "traffic_left_mb": left}
     sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
     if info.get("country") != "RU":
         logger.warning("the exit address is not in Russia (country=%s): check the proxy package", info.get("country"))
