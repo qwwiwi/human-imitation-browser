@@ -11,6 +11,8 @@ Exit codes (also documented in README and skill/SKILL.md):
     7  page load timeout
     8  browser failed to start
     9  the site answered a server error (HTTP 5xx) and the page is not a challenge page
+    10 the profile is in use by another run (two runs never share one profile)
+    11 profile problem (not found, damaged, cannot be created or deleted)
 """
 
 EXIT_OK = 0
@@ -58,3 +60,15 @@ class PageServerError(HibError):
     """The site answered with a server error (HTTP 5xx) and the page is not a challenge page."""
 
     exit_code = 9
+
+
+class ProfileBusyError(HibError):
+    """Another run is using this profile right now."""
+
+    exit_code = 10
+
+
+class ProfileError(HibError):
+    """A profile is missing, damaged or cannot be created, read or deleted."""
+
+    exit_code = 11

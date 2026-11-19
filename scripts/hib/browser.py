@@ -3,6 +3,7 @@
 import logging
 import random
 import time
+import warnings
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -11,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from camoufox.exceptions import InvalidIP, InvalidProxy
+from camoufox.fingerprints import Screen, generate_fingerprint
 from camoufox.sync_api import Camoufox
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page
@@ -18,9 +20,16 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from hib.challenge import detect_challenge
 from hib.errors import BrowserStartError, HibError, PageServerError, PageTimeoutError, ProxyUnreachableError
+from hib.pace import Pacer
+from hib.profiles import Profile
 from hib.proxy import ProxyConfig, redact
 
 logger = logging.getLogger(__name__)
+
+# The fingerprint is drawn once per profile: a desktop Windows Firefox with a common screen size.
+PROFILE_OS = "windows"
+PROFILE_SCREEN = Screen(min_width=1280, max_width=1920, min_height=720, max_height=1080)
+TIMEZONE_SCRIPT = "() => Intl.DateTimeFormat().resolvedOptions().timeZone"
 
 # Firefox network error names that mean the proxy itself failed.
 PROXY_ERROR_MARKERS = ("NS_ERROR_PROXY", "NS_ERROR_UNKNOWN_PROXY_HOST")
@@ -203,16 +212,30 @@ def open_one(page: Page, url: str, options: OpenOptions, secrets: list[str]) -> 
     )
 
 
+def make_fingerprint() -> dict[str, object]:
+    """Draw the browser fingerprint of a new profile (called once, at profile creation).
+
+    Returns:
+        A JSON-ready fingerprint for Camoufox's `fingerprint=` option.
+    """
+    return generate_fingerprint(os=PROFILE_OS, screen=PROFILE_SCREEN)
+
+
 @contextmanager
-def launch(proxy: ProxyConfig | None, options: OpenOptions) -> Iterator[Page]:
+def launch(proxy: ProxyConfig | None, options: OpenOptions, profile: Profile | None = None) -> Iterator[Page]:
     """Start Camoufox on a virtual display and yield one tab.
+
+    With a profile the browser keeps its own folder (cookies, cache, history) and
+    always presents the fingerprint stored in the profile. Without one (only for
+    `--ephemeral`) every start is a brand-new browser with a new fingerprint.
 
     Args:
         proxy: Proxy to use, or None to go out directly (only for neutral test pages).
         options: Opening options.
+        profile: The profile to use, or None for a throw-away browser.
 
     Yields:
-        A new page (tab).
+        The profile's tab (a new tab for a throw-away browser).
 
     Raises:
         BrowserStartError: The browser could not start.
@@ -221,9 +244,15 @@ def launch(proxy: ProxyConfig | None, options: OpenOptions) -> Iterator[Page]:
     kwargs: dict[str, object] = {
         "headless": "virtual",
         "humanize": True,
-        "locale": "ru-RU",
+        "locale": profile.data.locale if profile else "ru-RU",
         "geoip": proxy is not None,
     }
+    if profile:
+        # Camoufox 0.5.9: persistent_context -> sync_api.py _launch -> launch_persistent_context(user_data_dir=...);
+        # fingerprint= is used as is, and the seeded draws (fonts, voices, GPU) follow it (fingerprints.identity_salt).
+        kwargs["persistent_context"] = True
+        kwargs["user_data_dir"] = str(profile.user_data_dir)
+        kwargs["fingerprint"] = profile.fingerprint
     if proxy:
         kwargs["proxy"] = proxy.as_playwright()
     if options.block_images:
@@ -231,7 +260,11 @@ def launch(proxy: ProxyConfig | None, options: OpenOptions) -> Iterator[Page]:
     logger.info("starting the browser (about 10 s)")
     try:
         manager = Camoufox(**kwargs)
-        browser = manager.__enter__()
+        with warnings.catch_warnings():
+            # Reusing our own stored fingerprint is the point of a profile; Camoufox's general
+            # "passing your own fingerprint is not recommended" notice would only confuse here.
+            warnings.filterwarnings("ignore", message="Passing your own fingerprint", category=RuntimeWarning)  # LeakWarning
+            browser = manager.__enter__()
     except (InvalidIP, InvalidProxy) as exc:
         # With geoip=True Camoufox first looks up the exit address through the proxy.
         message = redact(f"{type(exc).__name__}: {exc}".splitlines()[0], secrets)
@@ -243,9 +276,21 @@ def launch(proxy: ProxyConfig | None, options: OpenOptions) -> Iterator[Page]:
             "run scripts/install.sh and the apt-get command it prints at the end"
         ) from None
     try:
-        yield browser.new_page()
+        if profile:
+            # A persistent context opens with one tab already; use it instead of adding a second.
+            yield browser.pages[0] if browser.pages else browser.new_page()  # type: ignore[union-attr]
+        else:
+            yield browser.new_page()
     finally:
         manager.__exit__(None, None, None)
+
+
+def _observed_timezone(page: Page) -> str:
+    """Read the time zone the browser shows to sites; empty if it cannot be read."""
+    try:
+        return str(page.evaluate(TIMEZONE_SCRIPT))
+    except PlaywrightError:
+        return ""
 
 
 def open_pages(
@@ -253,28 +298,39 @@ def open_pages(
     proxy: ProxyConfig | None,
     options: OpenOptions,
     emit: Callable[[PageResult], None],
+    profile: Profile | None = None,
+    pacer: Pacer | None = None,
 ) -> bool:
     """Open addresses one by one in one browser, pausing between them.
 
-    Stops at the first challenge page.
+    Stops at the first challenge page; the profile is kept as it is.
 
     Args:
         urls: Addresses in order.
         proxy: Proxy or None.
         options: Opening options.
         emit: Called with each page result as soon as it is ready.
+        profile: Profile whose browser memory and fingerprint are used, or None (`--ephemeral`).
+        pacer: Keeps the gap between navigations to one host across runs, or None.
 
     Returns:
         True if a challenge page stopped the run.
     """
     options.out_dir.mkdir(parents=True, exist_ok=True)
     secrets = proxy.secrets() if proxy else []
-    with launch(proxy, options) as page:
+    if pacer:
+        pacer.wait_turn(urlsplit(urls[0]).hostname or "")  # before the start: do not hold a browser while waiting
+    with launch(proxy, options, profile) as page:
+        if profile:
+            profile.record_visit()  # counted only now: a browser that did not start is not a visit
+            profile.note_timezone(_observed_timezone(page))
         for index, url in enumerate(urls):
             if index > 0:
                 low, high = options.pause_between_s
                 logger.info("pausing %.0f-%.0f s before the next page", low, high)
                 _sleep(low, high)
+                if pacer:
+                    pacer.wait_turn(urlsplit(url).hostname or "")
             result = open_one(page, url, options, secrets)
             emit(result)
             if result.challenge:

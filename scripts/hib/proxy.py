@@ -8,7 +8,7 @@ import json
 import logging
 import urllib.error
 import urllib.request
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from email.message import Message
 from typing import IO
@@ -32,12 +32,14 @@ class ProxyConfig:
         port: Proxy port.
         username: Login (hidden in repr).
         password: Password (hidden in repr).
+        extra_secrets: Other values to hide, for example the login before a session id was put in.
     """
 
     host: str
     port: int
     username: str = field(repr=False)
     password: str = field(repr=False)
+    extra_secrets: tuple[str, ...] = field(default=(), repr=False)
 
     def as_playwright(self) -> dict[str, str]:
         """Return the dict Camoufox / Playwright expect in `proxy=`."""
@@ -51,7 +53,10 @@ class ProxyConfig:
 
     def secrets(self) -> list[str]:
         """Return the values that must never be printed."""
-        return [self.password, self.username, quote(self.password, safe=""), quote(self.username, safe="")]
+        found = [self.password, self.username, quote(self.password, safe=""), quote(self.username, safe="")]
+        for extra in self.extra_secrets:
+            found += [extra, quote(extra, safe="")]
+        return found
 
 
 def redact(text: str, secrets: Iterable[str]) -> str:
@@ -187,12 +192,27 @@ def _check_token(token: str) -> None:
         raise ConfigError("MOBILEPROXY_API_TOKEN has characters that are not allowed (spaces, line breaks): re-copy it")
 
 
-def call_mobileproxy(command: str, token: str) -> object:
+def build_api_url(command: str, params: Mapping[str, str] | None = None) -> str:
+    """Build the API address for one command with optional extra parameters.
+
+    Args:
+        command: API command.
+        params: Extra query parameters, in order.
+
+    Returns:
+        The address (it never contains the token: that goes in a header).
+    """
+    query = "".join(f"&{quote(key)}={quote(value)}" for key, value in (params or {}).items())
+    return f"{MOBILEPROXY_API}?command={quote(command)}{query}"
+
+
+def call_mobileproxy(command: str, token: str, params: Mapping[str, str] | None = None) -> object:
     """Call one mobileproxy.space API command and return decoded JSON.
 
     Args:
         command: API command, for example `get_my_proxy` or `get_balance`.
         token: API token from the personal cabinet.
+        params: Extra query parameters, for example `proxy_id`.
 
     Returns:
         Decoded JSON answer.
@@ -203,7 +223,7 @@ def call_mobileproxy(command: str, token: str) -> object:
     """
     _check_token(token)
     req = urllib.request.Request(
-        f"{MOBILEPROXY_API}?command={quote(command)}",
+        build_api_url(command, params),
         headers={"Authorization": f"Bearer {token}"},
     )
     logger.info("asking the proxy API: %s", command)
